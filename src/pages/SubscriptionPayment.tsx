@@ -27,7 +27,8 @@ import {
   Zap,
   HelpCircle,
   Download,
-  FileText
+  FileText,
+  X
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiFetch } from '../utils/api';
@@ -97,6 +98,20 @@ export default function SubscriptionPayment() {
   const [licenseKey, setLicenseKey] = useState<string | null>(null);
   const [ficheHtml, setFicheHtml] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
+
+  // Payer details modal states (Mobile Money & Card)
+  const [showPayerModal, setShowPayerModal] = useState(false);
+  const [payerFullName, setPayerFullName] = useState(initialAdminNom || '');
+  const [payerEmail, setPayerEmail] = useState(initialEmail || '');
+  const [payerOperator, setPayerOperator] = useState('MTN');
+  const [payerPhoneNumber, setPayerPhoneNumber] = useState(initialPhone || '');
+
+  // Card specific state
+  const [cardHolder, setCardHolder] = useState(initialAdminNom || '');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExp, setCardExp] = useState('');
+  const [cardCvc, setCardCvc] = useState('');
+  const [cardBrand, setCardBrand] = useState<'visa' | 'mastercard' | 'cb'>('cb');
 
   // Load configured payment methods from Super Admin settings
   useEffect(() => {
@@ -314,10 +329,66 @@ export default function SubscriptionPayment() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Keep payer details in sync with school info
+  useEffect(() => {
+    if (adminNom && !payerFullName) setPayerFullName(adminNom);
+    if (email && !payerEmail) setPayerEmail(email);
+    if (phone && !payerPhoneNumber) setPayerPhoneNumber(phone);
+    if (adminNom && !cardHolder) setCardHolder(adminNom);
+  }, [adminNom, email, phone]);
+
+  const handleSelectMethod = (method: PaymentMethod) => {
+    setSelectedMethodId(method.id);
+    if (method.type === 'card' || method.id.includes('card')) {
+      if (method.id.includes('visa')) setCardBrand('visa');
+      else if (method.id.includes('mastercard')) setCardBrand('mastercard');
+    } else if (method.provider) {
+      const prov = method.provider.toUpperCase();
+      if (['MTN', 'MOOV', 'CELTIIS', 'ORANGE', 'WAVE'].includes(prov)) {
+        setPayerOperator(prov);
+      }
+    }
+    // Automatically open the payer info modal after choosing payment method
+    setShowPayerModal(true);
+  };
+
+  const handleCardNumberInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value.replace(/\D/g, '').slice(0, 16);
+    const formatted = raw.replace(/(\d{4})/g, '$1 ').trim();
+    setCardNumber(formatted);
+    if (raw.startsWith('4')) {
+      setCardBrand('visa');
+    } else if (/^(5[1-5]|2[2-7])/.test(raw)) {
+      setCardBrand('mastercard');
+    } else {
+      setCardBrand('cb');
+    }
+  };
+
+  const handleCardExpInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value.replace(/\D/g, '').slice(0, 4);
+    if (raw.length >= 3) {
+      setCardExp(`${raw.slice(0, 2)}/${raw.slice(2)}`);
+    } else {
+      setCardExp(raw);
+    }
+  };
+
+  const handleCardCvcInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value.replace(/\D/g, '').slice(0, 4);
+    setCardCvc(raw);
+  };
+
   // Initiate and execute transaction
-  const handleInitiatePayment = async (isTestMode = false) => {
+  const handleInitiatePayment = async (isTestMode = false, overrideData?: any) => {
     setIsProcessing(true);
     try {
+      const isCard = (selectedMethod?.type === 'card' || selectedMethod?.id?.includes('card') || overrideData?.paymentMethodType === 'card');
+      const effectiveOperator = isTestMode ? 'TEST' : (isCard ? (cardBrand || 'CARTE').toUpperCase() : (overrideData?.operator || payerOperator || selectedMethod?.provider || 'MTN'));
+      const effectivePayerName = (overrideData?.payerName || (isCard ? cardHolder : payerFullName) || adminNom || '').trim();
+      const effectivePhone = (overrideData?.payerPhone || (isCard ? 'CARTE' : payerPhoneNumber) || phone || '01000000').trim();
+      const effectivePayerEmail = (overrideData?.payerEmail || payerEmail || email || '').trim().toLowerCase();
+
       const payload = {
         schoolName: schoolName.trim(),
         adminNom: adminNom.trim(),
@@ -335,10 +406,16 @@ export default function SubscriptionPayment() {
         remainingSchedule: currentModality.remainingScheduleText,
         billingCycle: selectedModality,
         modalite: selectedModality,
-        paymentMethodId: selectedMethod?.id || 'momo',
-        operator: isTestMode ? 'TEST' : (selectedMethod?.provider || 'MTN'),
-        payerName: adminNom.trim(),
-        payerPhone: phone || '01000000',
+        paymentMethodId: selectedMethod?.id || (isCard ? 'card' : 'momo'),
+        paymentMethodType: isCard ? 'card' : 'mobile_money',
+        operator: effectiveOperator,
+        payerName: effectivePayerName,
+        payerPhone: effectivePhone,
+        payerEmail: effectivePayerEmail,
+        cardNumber: isCard ? (overrideData?.cardNumber || cardNumber).replace(/\s/g, '') : undefined,
+        cardExp: isCard ? (overrideData?.cardExp || cardExp) : undefined,
+        cardCvc: isCard ? (overrideData?.cardCvc || cardCvc) : undefined,
+        cardBrand: isCard ? (overrideData?.cardBrand || cardBrand.toUpperCase()) : undefined,
         isTest: isTestMode
       };
 
@@ -370,6 +447,7 @@ export default function SubscriptionPayment() {
 
       setLicenseKey(confirmData.license_key);
       setFicheHtml(confirmData.fiche_html);
+      setShowPayerModal(false);
       setStep('success');
       toast.success("Paiement validé avec succès ! Votre clé a été générée.");
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -783,7 +861,7 @@ export default function SubscriptionPayment() {
                     return (
                       <div
                         key={method.id}
-                        onClick={() => setSelectedMethodId(method.id)}
+                        onClick={() => handleSelectMethod(method)}
                         className={`p-4 rounded-2xl border cursor-pointer transition-all flex items-start gap-3.5 ${
                           isSelected
                             ? 'border-primary-600 bg-primary-50/50 shadow-sm ring-2 ring-primary-500/20'
@@ -888,7 +966,7 @@ export default function SubscriptionPayment() {
                   <button
                     type="button"
                     disabled={isProcessing}
-                    onClick={() => handleInitiatePayment(false)}
+                    onClick={() => setShowPayerModal(true)}
                     className="w-full py-4 px-6 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white font-extrabold text-sm rounded-xl shadow-lg shadow-primary-600/30 flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.99]"
                   >
                     {isProcessing ? (
@@ -901,8 +979,8 @@ export default function SubscriptionPayment() {
                         <Lock size={18} />
                         <span>
                           {currentModality.isUnique
-                            ? `Valider le Règlement Unique (${Number(finalPrice).toLocaleString('fr-FR')} FCFA)`
-                            : `Valider l'Acompte Initial de 45% (${Number(finalPrice).toLocaleString('fr-FR')} FCFA)`}
+                            ? `Saisir les informations & Valider le Règlement (${Number(finalPrice).toLocaleString('fr-FR')} FCFA)`
+                            : `Saisir les informations & Valider l'Acompte de 45% (${Number(finalPrice).toLocaleString('fr-FR')} FCFA)`}
                         </span>
                         <ArrowRight size={18} />
                       </>
@@ -1168,6 +1246,369 @@ export default function SubscriptionPayment() {
           </div>
         )}
       </main>
+
+      {/* ================= MODAL: Payer Information & Confirmation ================= */}
+      {showPayerModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl border border-slate-100 flex flex-col max-h-[92vh] animate-in zoom-in-95 duration-200">
+            
+            {/* Modal Header */}
+            <div className={`p-5 sm:p-6 text-white relative ${
+              selectedMethod?.type === 'card' || selectedMethod?.id?.includes('card')
+                ? 'bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900'
+                : 'bg-gradient-to-r from-slate-900 via-amber-950 to-slate-900'
+            }`}>
+              <button
+                type="button"
+                onClick={() => setShowPayerModal(false)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-xl hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <X size={20} />
+              </button>
+
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center shrink-0">
+                  {selectedMethod?.type === 'card' || selectedMethod?.id?.includes('card') ? (
+                    <CreditCard className="w-6 h-6 text-indigo-300" />
+                  ) : (
+                    <Smartphone className="w-6 h-6 text-amber-300" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-lg font-black tracking-tight">
+                    {selectedMethod?.type === 'card' || selectedMethod?.id?.includes('card')
+                      ? 'Paiement Sécurisé par Carte Bancaire'
+                      : 'Paiement par Mobile Money'}
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    {currentModality.isUnique
+                      ? `Règlement unique : ${Number(finalPrice).toLocaleString('fr-FR')} FCFA`
+                      : `Acompte initial de 45% : ${Number(finalPrice).toLocaleString('fr-FR')} FCFA`}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Body / Form */}
+            <div className="p-6 overflow-y-auto space-y-4 text-slate-800">
+              
+              {/* Conditional Form: Card vs Mobile Money */}
+              {selectedMethod?.type === 'card' || selectedMethod?.id?.includes('card') ? (
+                /* Card Payment Form */
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!cardHolder.trim()) {
+                      toast.error("Veuillez renseigner le nom complet du titulaire de la carte.");
+                      return;
+                    }
+                    if (!payerEmail.trim() || !payerEmail.includes('@')) {
+                      toast.error("Veuillez renseigner une adresse email valide pour le reçu.");
+                      return;
+                    }
+                    const cleanCard = cardNumber.replace(/\s/g, '');
+                    if (cleanCard.length < 15) {
+                      toast.error("Veuillez renseigner un numéro de carte bancaire valide.");
+                      return;
+                    }
+                    if (!cardExp.trim() || !cardExp.includes('/') || cardExp.length < 5) {
+                      toast.error("Veuillez renseigner la date d'expiration (MM/AA).");
+                      return;
+                    }
+                    if (!cardCvc.trim() || cardCvc.length < 3) {
+                      toast.error("Veuillez renseigner le code de sécurité CVC/CVV.");
+                      return;
+                    }
+
+                    handleInitiatePayment(false, {
+                      paymentMethodType: 'card',
+                      payerName: cardHolder.trim(),
+                      payerEmail: payerEmail.trim(),
+                      cardNumber: cleanCard,
+                      cardExp: cardExp.trim(),
+                      cardCvc: cardCvc.trim(),
+                      cardBrand: cardBrand.toUpperCase()
+                    });
+                  }}
+                  className="space-y-4"
+                >
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Nom complet sur la carte *
+                    </label>
+                    <div className="relative">
+                      <User size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        required
+                        value={cardHolder}
+                        onChange={(e) => setCardHolder(e.target.value)}
+                        placeholder="Ex: JEAN DUPONT"
+                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Adresse Email pour le reçu officiel *
+                    </label>
+                    <div className="relative">
+                      <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="email"
+                        required
+                        value={payerEmail}
+                        onChange={(e) => setPayerEmail(e.target.value)}
+                        placeholder="direction@mon-ecole.com"
+                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                        Numéro de carte bancaire *
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+                          cardBrand === 'visa' ? 'bg-blue-600 text-white' : cardBrand === 'mastercard' ? 'bg-rose-600 text-white' : 'bg-slate-200 text-slate-700'
+                        }`}>
+                          {cardBrand === 'visa' ? 'Visa' : cardBrand === 'mastercard' ? 'Mastercard' : 'CB'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="relative">
+                      <CreditCard size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        required
+                        value={cardNumber}
+                        onChange={handleCardNumberInput}
+                        placeholder="4532 0000 0000 0000"
+                        maxLength={19}
+                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono font-bold tracking-wider"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Expiration (MM/AA) *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={cardExp}
+                        onChange={handleCardExpInput}
+                        placeholder="12/28"
+                        maxLength={5}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono font-bold text-center"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        CVC / CVV *
+                      </label>
+                      <div className="relative">
+                        <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="password"
+                          required
+                          value={cardCvc}
+                          onChange={handleCardCvcInput}
+                          placeholder="•••"
+                          maxLength={4}
+                          className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono font-bold text-center"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center gap-2.5 text-[11px] text-slate-600">
+                    <ShieldCheck size={18} className="text-emerald-600 shrink-0" />
+                    <span>Chiffrement bancaire SSL 256 bits et authentification sécurisée 3D-Secure.</span>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isProcessing}
+                    className="w-full py-3.5 px-4 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-extrabold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isProcessing ? (
+                      <>
+                        <RefreshCw size={18} className="animate-spin" />
+                        <span>Sécurisation & Débit carte en cours...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock size={16} />
+                        <span>Payer par Carte ({Number(finalPrice).toLocaleString('fr-FR')} FCFA)</span>
+                        <ArrowRight size={16} />
+                      </>
+                    )}
+                  </button>
+                </form>
+              ) : (
+                /* Mobile Money Payment Form */
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!payerFullName.trim()) {
+                      toast.error("Veuillez renseigner le nom complet de la personne effectuant le paiement.");
+                      return;
+                    }
+                    if (!payerEmail.trim() || !payerEmail.includes('@')) {
+                      toast.error("Veuillez renseigner une adresse email valide pour le reçu.");
+                      return;
+                    }
+                    if (!payerPhoneNumber.trim()) {
+                      toast.error("Veuillez renseigner le numéro de téléphone Mobile Money.");
+                      return;
+                    }
+
+                    handleInitiatePayment(false, {
+                      paymentMethodType: 'mobile_money',
+                      payerName: payerFullName.trim(),
+                      payerEmail: payerEmail.trim(),
+                      operator: payerOperator,
+                      payerPhone: payerPhoneNumber.trim()
+                    });
+                  }}
+                  className="space-y-4"
+                >
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Nom complet de celui qui effectue le paiement *
+                    </label>
+                    <div className="relative">
+                      <User size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        required
+                        value={payerFullName}
+                        onChange={(e) => setPayerFullName(e.target.value)}
+                        placeholder="Ex: Jean DUPONT (ou Directeur / Trésorier)"
+                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Adresse Email pour le reçu de paiement *
+                    </label>
+                    <div className="relative">
+                      <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="email"
+                        required
+                        value={payerEmail}
+                        onChange={(e) => setPayerEmail(e.target.value)}
+                        placeholder="direction@mon-ecole.com"
+                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Choix de l'opérateur Mobile Money *
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {[
+                        { id: 'MTN', name: 'MTN MoMo', color: 'border-yellow-400 bg-yellow-50 text-yellow-900', badge: '🟡' },
+                        { id: 'MOOV', name: 'Moov Money', color: 'border-blue-400 bg-blue-50 text-blue-900', badge: '🔵' },
+                        { id: 'CELTIIS', name: 'Celtiis Cash', color: 'border-emerald-400 bg-emerald-50 text-emerald-900', badge: '🟢' },
+                        { id: 'ORANGE', name: 'Orange Money', color: 'border-orange-400 bg-orange-50 text-orange-900', badge: '🟠' },
+                        { id: 'WAVE', name: 'Wave Money', color: 'border-cyan-400 bg-cyan-50 text-cyan-900', badge: '🌊' }
+                      ].map((op) => (
+                        <button
+                          type="button"
+                          key={op.id}
+                          onClick={() => setPayerOperator(op.id)}
+                          className={`p-2.5 rounded-xl border text-left transition-all flex items-center gap-2 cursor-pointer ${
+                            payerOperator === op.id
+                              ? `${op.color} ring-2 ring-primary-500 font-extrabold shadow-xs`
+                              : 'border-slate-200 bg-white hover:border-slate-300 text-slate-700'
+                          }`}
+                        >
+                          <span className="text-base">{op.badge}</span>
+                          <span className="text-xs truncate">{op.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Numéro de téléphone de paiement (Mobile Money) *
+                    </label>
+                    <div className="relative">
+                      <Phone size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="tel"
+                        required
+                        value={payerPhoneNumber}
+                        onChange={(e) => setPayerPhoneNumber(e.target.value)}
+                        placeholder="Ex: (+229) 01 61 10 79 ou 95 00 00 00"
+                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono font-bold"
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Ce numéro recevra la demande de confirmation (prompt USSD) pour valider le débit de {Number(finalPrice).toLocaleString('fr-FR')} FCFA.
+                    </p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isProcessing}
+                    className="w-full py-3.5 px-4 bg-primary-600 hover:bg-primary-700 active:scale-[0.99] text-white font-extrabold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isProcessing ? (
+                      <>
+                        <RefreshCw size={18} className="animate-spin" />
+                        <span>Envoi de la demande sur votre téléphone...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Continuer vers le paiement ({Number(finalPrice).toLocaleString('fr-FR')} FCFA)</span>
+                        <ArrowRight size={16} />
+                      </>
+                    )}
+                  </button>
+                </form>
+              )}
+
+              {/* Fast Test / Demo button inside modal */}
+              <div className="pt-2 border-t border-slate-100 text-center">
+                <button
+                  type="button"
+                  disabled={isProcessing}
+                  onClick={() => {
+                    handleInitiatePayment(true, {
+                      paymentMethodType: selectedMethod?.type === 'card' || selectedMethod?.id?.includes('card') ? 'card' : 'mobile_money',
+                      payerName: payerFullName || adminNom || 'Directeur Test',
+                      payerEmail: payerEmail || email,
+                      operator: 'TEST',
+                      payerPhone: '99999999'
+                    });
+                  }}
+                  className="text-xs font-bold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg border border-emerald-200 transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Sparkles size={13} />
+                  <span>Mode Test / Démo : Valider immédiatement sans débit réel</span>
+                </button>
+              </div>
+
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-slate-200 bg-white py-6 mt-12">

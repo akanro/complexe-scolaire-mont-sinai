@@ -19788,9 +19788,16 @@ function executeYearTransition(
         remainingPercentage,
         remainingAmount,
         modalityName,
-        remainingSchedule
+        remainingSchedule,
+        paymentMethodType,
+        cardNumber,
+        cardExp,
+        cardCvc,
+        cardBrand,
+        payerEmail
       } = req.body;
 
+      const isCard = (paymentMethodType === 'card' || operator === 'CARTE' || !!cardNumber);
       const cycle = (billingCycle || modalite || 'annuel').toString().toLowerCase().trim();
       const totalAmt = Number(totalPlanAmount || (cycle === 'annuel' ? amount : Math.round(Number(amount) / 0.45)));
       const initialPct = Number(initialPercentage || (cycle === 'annuel' ? 100 : 45));
@@ -19799,13 +19806,26 @@ function executeYearTransition(
       const modName = modalityName || (cycle === 'annuel' ? 'Annuel (Paiement unique)' : cycle === 'semestriel' ? 'Semestriel (2 tranches)' : cycle === 'trimestriel' ? 'Trimestriel (3 échéances)' : 'Mensuel (Échéancier)');
       const remSchedule = remainingSchedule || (initialPct === 100 ? 'Aucun solde (Formule soldée intégralement)' : 'Solde de 55% exigible selon la modalité choisie');
 
-      if (!schoolName || !email || !planName || !amount || !operator || !payerPhone) {
-        return res.status(400).json({ success: false, error: "Informations de paiement incomplètes." });
+      if (!schoolName || !email || !planName || !amount) {
+        return res.status(400).json({ success: false, error: "Informations de l'établissement incomplètes." });
       }
+
+      const effectivePayerName = (payerName || adminNom || '').trim();
+      if (!effectivePayerName) {
+        return res.status(400).json({ success: false, error: "Veuillez renseigner le nom complet de la personne effectuant le paiement." });
+      }
+
+      if (!isCard && (!operator || !payerPhone)) {
+        return res.status(400).json({ success: false, error: "Veuillez choisir un opérateur et saisir le téléphone de paiement Mobile Money." });
+      }
+
+      const effectiveOperator = isCard ? (cardBrand || 'CARTE').toUpperCase() : (operator || 'MTN').toUpperCase();
+      const effectivePhone = isCard ? (cardNumber ? `**** ${cardNumber.replace(/\s/g, '').slice(-4)}` : 'CARTE') : payerPhone;
+      const effectiveMethodType = isCard ? 'card' : 'mobile_money';
 
       // Special handling for Test Mode
       if (isTest || operator === 'TEST') {
-        const reference = `TEST-MM-${Date.now()}`;
+        const reference = `TEST-${isCard ? 'CARD' : 'MM'}-${Date.now()}`;
         const cleanPassword = password ? password.toString().trim() : 'Admin@2026';
         const passwordHash = bcrypt.hashSync(cleanPassword, 8);
         
@@ -19815,7 +19835,7 @@ function executeYearTransition(
             amount, currency, payment_method_id, payment_method_type, operator, payer_name,
             payer_phone, status, ussd_code, billing_cycle,
             total_amount, initial_percentage, initial_amount, remaining_amount, remaining_schedule, modality_name
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FCFA', ?, 'mobile_money', 'TEST', ?, ?, 'pending', '*TEST#', ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FCFA', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           reference,
           schoolName,
@@ -19826,9 +19846,12 @@ function executeYearTransition(
           planId ? String(planId) : null,
           planName,
           amount,
-          paymentMethodId || 'test_mode',
-          payerName || adminNom || 'Client Test',
-          payerPhone || '99999999',
+          paymentMethodId || (isCard ? 'card_payment' : 'test_mode'),
+          effectiveMethodType,
+          effectiveOperator,
+          effectivePayerName,
+          effectivePhone,
+          isCard ? 'PAIEMENT PAR CARTE BANCAIRE' : '*TEST#',
           cycle,
           totalAmt,
           initialPct,
@@ -19841,7 +19864,8 @@ function executeYearTransition(
         return res.json({
           success: true,
           reference,
-          operator: 'TEST',
+          operator: effectiveOperator,
+          payment_method_type: effectiveMethodType,
           amount,
           total_amount: totalAmt,
           initial_percentage: initialPct,
@@ -19849,8 +19873,9 @@ function executeYearTransition(
           remaining_amount: remainingAmt,
           remaining_schedule: remSchedule,
           modality_name: modName,
-          payerPhone: payerPhone || '99999999',
-          ussdCode: '*TEST#',
+          payerPhone: effectivePhone,
+          payerName: effectivePayerName,
+          ussdCode: isCard ? 'CARTE' : '*TEST#',
           testMode: true,
           message: initialPct === 100 
             ? "[MODE TEST] Vous pouvez valider directement ce paiement unique pour activer votre compte école."
@@ -19929,7 +19954,7 @@ function executeYearTransition(
           amount, currency, payment_method_id, payment_method_type, operator, payer_name,
           payer_phone, status, ussd_code, billing_cycle,
           total_amount, initial_percentage, initial_amount, remaining_amount, remaining_schedule, modality_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FCFA', ?, 'mobile_money', ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FCFA', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         reference,
         schoolName,
@@ -19940,11 +19965,12 @@ function executeYearTransition(
         planId ? String(planId) : null,
         planName,
         amount,
-        paymentMethodId || 'mobile_money',
-        operator.toUpperCase(),
-        payerName || adminNom || 'Client',
-        payerPhone,
-        ussdCode,
+        paymentMethodId || (isCard ? 'card_payment' : 'mobile_money'),
+        effectiveMethodType,
+        effectiveOperator,
+        effectivePayerName,
+        effectivePhone,
+        isCard ? 'PAIEMENT PAR CARTE BANCAIRE' : ussdCode,
         cycle,
         totalAmt,
         initialPct,
