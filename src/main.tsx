@@ -6,6 +6,34 @@ import { AuthProvider } from './contexts/AuthContext.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { registerSW } from 'virtual:pwa-register';
 
+// Protect against browser translation / extensions modifying DOM nodes and breaking React reconciliation
+if (typeof window !== 'undefined' && typeof Node !== 'undefined') {
+  const originalInsertBefore = Node.prototype.insertBefore;
+  Node.prototype.insertBefore = function <T extends Node>(newNode: T, referenceNode: Node | null): T {
+    if (referenceNode && referenceNode.parentNode !== this) {
+      if (this.contains(referenceNode)) {
+        let directChild: Node | null = referenceNode;
+        while (directChild && directChild.parentNode !== this) {
+          directChild = directChild.parentNode;
+        }
+        if (directChild && directChild.parentNode === this) {
+          return originalInsertBefore.call(this, newNode, directChild);
+        }
+      }
+      return this.appendChild(newNode);
+    }
+    return originalInsertBefore.call(this, newNode, referenceNode);
+  };
+
+  const originalRemoveChild = Node.prototype.removeChild;
+  Node.prototype.removeChild = function <T extends Node>(child: T): T {
+    if (child.parentNode !== this) {
+      return child;
+    }
+    return originalRemoveChild.call(this, child);
+  };
+}
+
 // Prevent uncaught chunk preload errors from crashing the app during updates or local usage
 if (typeof window !== 'undefined') {
   window.addEventListener('vite:preloadError', (event) => {
