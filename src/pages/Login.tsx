@@ -211,84 +211,10 @@ export default function Login() {
     }
   };
 
-  const ensureGisLoaded = async (): Promise<boolean> => {
-    if (typeof window === 'undefined') return false;
-    if ((window as any).google?.accounts?.oauth2) return true;
-
-    return new Promise((resolve) => {
-      let script = document.querySelector('script[src*="accounts.google.com/gsi/client"]') as HTMLScriptElement;
-      if (!script) {
-        script = document.createElement('script');
-        script.src = 'https://accounts.google.com/gsi/client';
-        script.async = true;
-        document.head.appendChild(script);
-      }
-
-      let elapsed = 0;
-      const check = setInterval(() => {
-        elapsed += 50;
-        if ((window as any).google?.accounts?.oauth2) {
-          clearInterval(check);
-          resolve(true);
-        } else if (elapsed > 3000) {
-          clearInterval(check);
-          resolve(false);
-        }
-      }, 50);
-    });
-  };
-
   const handleGoogleLogin = async () => {
     setLoading(true);
     try {
-      const fbConfigModule = await import('../../firebase-applet-config.json');
-      const oAuthClientId = fbConfigModule.default?.oAuthClientId || (fbConfigModule as any)?.oAuthClientId;
-
-      // 1. Prioritize Google Identity Services (GIS) TokenClient
-      // This is officially authorized for this origin and directly opens the "Choisir un compte" window
-      const gisAvailable = await ensureGisLoaded();
-
-      if (gisAvailable && oAuthClientId && (window as any).google?.accounts?.oauth2) {
-        const client = (window as any).google.accounts.oauth2.initTokenClient({
-          client_id: oAuthClientId,
-          scope: 'email profile openid',
-          callback: async (tokenResponse: any) => {
-            if (tokenResponse.error) {
-              setLoading(false);
-              if (tokenResponse.error !== 'popup_closed_by_user') {
-                toast.error(`Erreur Google: ${tokenResponse.error}`);
-              }
-              return;
-            }
-            try {
-              const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-                headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
-              });
-              if (!userInfoRes.ok) throw new Error("Impossible de récupérer les informations Google.");
-              const profile = await userInfoRes.json();
-              if (profile.email) {
-                await executeGoogleLogin(profile.email, profile.name);
-              } else {
-                toast.error("Aucun email Google trouvé.");
-              }
-            } catch (err: any) {
-              toast.error(err.message || "Erreur de connexion");
-            } finally {
-              setLoading(false);
-            }
-          },
-          error_callback: (err: any) => {
-            console.warn('[GIS Error]', err);
-            setLoading(false);
-          }
-        });
-
-        // prompt: 'select_account' forces the Google popup to display the list of all accounts
-        client.requestAccessToken({ prompt: 'select_account' });
-        return;
-      }
-
-      // 2. Secondary fallback: Firebase Auth Popup
+      // 1. Primary: Use Firebase Auth Popup (uses authDomain chrome-pride-dh7sp.firebaseapp.com, avoiding origin_mismatch)
       try {
         const { auth, googleProvider, signInWithPopup } = await import('../lib/firebase');
         googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -302,10 +228,10 @@ export default function Login() {
           setLoading(false);
           return;
         }
-        console.warn('[Google Auth] Firebase popup fallback:', fbErr);
+        console.warn('[Google Auth] Firebase popup fallback to direct modal:', fbErr);
       }
 
-      // 3. Fallback modal if popup blocked by browser
+      // 2. Direct secure login modal if Google popup is blocked or domain mismatch occurs
       setShowGoogleModal(true);
     } catch (err: any) {
       console.warn('Google login error:', err);
