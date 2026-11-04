@@ -28,7 +28,11 @@ import {
   HelpCircle,
   Download,
   FileText,
-  X
+  X,
+  XCircle,
+  AlertOctagon,
+  Clock,
+  Radio
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiFetch } from '../utils/api';
@@ -90,8 +94,17 @@ export default function SubscriptionPayment() {
   const [selectedMethodId, setSelectedMethodId] = useState<string>('');
   const [loadingConfig, setLoadingConfig] = useState(true);
 
+  // Email uniqueness validation states
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [isCheckingEmail, setIsCheckingEmail] = useState(false);
+
+  // Failure handling states
+  const [failureReason, setFailureReason] = useState<string | null>(null);
+  const [failureCode, setFailureCode] = useState<'insufficient_funds' | 'non_confirmation' | 'general' | null>(null);
+  const [countdown, setCountdown] = useState(120);
+
   // Transaction execution states
-  const [step, setStep] = useState<'info' | 'payment' | 'success'>('info');
+  const [step, setStep] = useState<'info' | 'payment' | 'ussd_wait' | 'success' | 'failed'>('info');
   const [isProcessing, setIsProcessing] = useState(false);
   const [txReference, setTxReference] = useState<string | null>(null);
   const [txDetails, setTxDetails] = useState<any>(null);
@@ -307,7 +320,28 @@ export default function SubscriptionPayment() {
 
   const selectedMethod = paymentMethods.find(m => m.id === selectedMethodId) || paymentMethods[0];
 
-  const handleProceedToPayment = (e: React.FormEvent) => {
+  // Timer for USSD waiting step: auto-timeout to failure if not confirmed
+  useEffect(() => {
+    let timer: any = null;
+    if (step === 'ussd_wait' && countdown > 0) {
+      timer = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            // If timer runs out without user confirmation, interrupt and fail
+            handleTriggerPaymentFailure('non_confirmation', "Délai d'attente USSD expiré. La demande de débit n'a pas été confirmée.");
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [step, countdown]);
+
+  const handleProceedToPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!schoolName.trim()) {
       toast.error("Veuillez renseigner le nom de l'établissement scolaire.");
@@ -325,6 +359,26 @@ export default function SubscriptionPayment() {
       toast.error("Veuillez renseigner le nom du responsable ou directeur.");
       return;
     }
+
+    // Règle stricte : Une adresse email ne peut être associée qu'à un seul compte école
+    setIsCheckingEmail(true);
+    try {
+      const checkRes = await apiFetch(`/api/auth/check-email?email=${encodeURIComponent(email.trim().toLowerCase())}`);
+      const checkData = await checkRes.json();
+      if (!checkData.available) {
+        const errorMsg = checkData.message || "Cette adresse email est déjà associée à un compte école existant. Une adresse email ne peut être associée qu'à un seul compte école.";
+        setEmailError(errorMsg);
+        toast.error(errorMsg);
+        setIsCheckingEmail(false);
+        return;
+      }
+      setEmailError(null);
+    } catch (err) {
+      console.warn("Could not check email availability:", err);
+    } finally {
+      setIsCheckingEmail(false);
+    }
+
     setStep('payment');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -379,9 +433,10 @@ export default function SubscriptionPayment() {
     setCardCvc(raw);
   };
 
-  // Initiate and execute transaction
+  // Initiate transaction
   const handleInitiatePayment = async (isTestMode = false, overrideData?: any) => {
     setIsProcessing(true);
+    setEmailError(null);
     try {
       const isCard = (selectedMethod?.type === 'card' || selectedMethod?.id?.includes('card') || overrideData?.paymentMethodType === 'card');
       const effectiveOperator = isTestMode ? 'TEST' : (isCard ? (cardBrand || 'CARTE').toUpperCase() : (overrideData?.operator || payerOperator || selectedMethod?.provider || 'MTN'));
@@ -427,36 +482,116 @@ export default function SubscriptionPayment() {
       const initData = await initRes.json();
 
       if (!initRes.ok || !initData.success) {
+        if (initData.code === 'EMAIL_ALREADY_EXISTS') {
+          setEmailError(initData.error);
+        }
         throw new Error(initData.error || "Impossible d'initialiser le paiement.");
       }
 
       setTxReference(initData.reference);
-      setTxDetails(initData);
+      setTxDetails({
+        ...initData,
+        payerPhone: effectivePhone,
+        payerName: effectivePayerName,
+        operator: effectiveOperator,
+        isCard
+      });
+      setShowPayerModal(false);
 
-      // Confirm payment to validate license key and send congratulations email
+      if (isCard) {
+        // Direct validation for Card
+        await handleConfirmSuccessfulPayment(initData.reference);
+      } else {
+        // Mobile Money: switch to USSD prompt waiting step
+        setCountdown(120);
+        setStep('ussd_wait');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        toast.success("Demande transmise : ce numéro recevra la demande de confirmation (prompt USSD) pour valider le débit.");
+      }
+
+    } catch (err: any) {
+      console.error("Payment initiation error:", err);
+      toast.error(err.message || "Échec de l'opération de paiement.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Confirm payment when USSD is approved by the user
+  const handleConfirmSuccessfulPayment = async (refToConfirm?: string) => {
+    const ref = refToConfirm || txReference;
+    if (!ref) {
+      toast.error("Référence de transaction introuvable.");
+      return;
+    }
+    setIsProcessing(true);
+    try {
       const confirmRes = await apiFetch('/api/payments/mobile-money/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reference: initData.reference })
+        body: JSON.stringify({ reference: ref })
       });
       const confirmData = await confirmRes.json();
 
       if (!confirmRes.ok || !confirmData.success) {
+        if (confirmData.code === 'EMAIL_ALREADY_EXISTS') {
+          setEmailError(confirmData.error);
+          setFailureCode('general');
+          setFailureReason(confirmData.error);
+          setStep('failed');
+          return;
+        }
         throw new Error(confirmData.error || "Erreur lors de la validation du paiement.");
       }
 
       setLicenseKey(confirmData.license_key);
       setFicheHtml(confirmData.fiche_html);
-      setShowPayerModal(false);
       setStep('success');
-      toast.success("Paiement validé avec succès ! Votre clé a été générée.");
+      toast.success("Paiement validé avec succès ! Votre compte école a été créé et activé.");
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
     } catch (err: any) {
-      console.error("Payment error:", err);
-      toast.error(err.message || "Échec de l'opération de paiement.");
+      console.error("Payment confirmation error:", err);
+      setFailureReason(err.message || "Échec de paiement : la transaction a été rejetée ou non confirmée.");
+      setFailureCode('general');
+      setStep('failed');
+      toast.error(err.message || "Échec de paiement : création du compte interrompue.");
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  // Handle and report payment failure (Fonds insuffisants, Non confirmation, Rejet)
+  const handleTriggerPaymentFailure = async (code: 'insufficient_funds' | 'non_confirmation' | 'general', customReason?: string) => {
+    setIsProcessing(true);
+    const ref = txReference;
+    try {
+      if (ref) {
+        await apiFetch('/api/payments/mobile-money/fail', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reference: ref,
+            failure_code: code,
+            reason: customReason
+          })
+        });
+      }
+    } catch (e) {
+      console.warn("Could not register failure with backend:", e);
+    } finally {
+      setIsProcessing(false);
+      setFailureCode(code);
+      setFailureReason(
+        code === 'insufficient_funds'
+          ? "Fonds insuffisants sur le compte de paiement Mobile Money."
+          : code === 'non_confirmation'
+            ? "Non-confirmation de la demande de débit (prompt USSD) sur le téléphone."
+            : (customReason || "Opération non validée par l'opérateur.")
+      );
+      setStep('failed');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      toast.error("Échec de paiement : l'opération de création du compte école a été interrompue.");
     }
   };
 
@@ -602,14 +737,46 @@ export default function SubscriptionPayment() {
                       required
                       placeholder="direction@mon-ecole.com"
                       value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm font-medium"
+                      onChange={(e) => {
+                        setEmail(e.target.value);
+                        if (emailError) setEmailError(null);
+                      }}
+                      onBlur={async () => {
+                        if (email.trim() && email.includes('@')) {
+                          try {
+                            const res = await apiFetch(`/api/auth/check-email?email=${encodeURIComponent(email.trim().toLowerCase())}`);
+                            const data = await res.json();
+                            if (!data.available) {
+                              setEmailError(data.message || "Cette adresse email est déjà associée à un compte école existant. Une adresse email ne peut être associée qu'à un seul compte école.");
+                            } else {
+                              setEmailError(null);
+                            }
+                          } catch (err) {}
+                        }
+                      }}
+                      className={`w-full pl-10 pr-4 py-3 rounded-xl border text-sm font-medium focus:outline-none focus:ring-2 ${
+                        emailError 
+                          ? 'border-rose-400 bg-rose-50/50 text-rose-900 focus:ring-rose-500' 
+                          : 'border-slate-300 focus:ring-primary-500'
+                      }`}
                     />
                   </div>
-                  <p className="text-[11px] text-amber-700 font-medium mt-1 flex items-center gap-1">
-                    <Sparkles size={12} />
-                    Un email officiel contenant la clé de licence y sera transmis immédiatement après règlement.
-                  </p>
+                  {emailError ? (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl mt-2 flex items-start gap-2 text-xs text-rose-800 animate-shake">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold">{emailError}</p>
+                        <p className="text-[11px] text-rose-600 mt-0.5">
+                          Règle : une adresse email ne peut être associée qu'à un seul compte école. Si vous avez déjà un compte, connectez-vous directement.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-amber-700 font-medium mt-1 flex items-center gap-1">
+                      <Sparkles size={12} />
+                      Une adresse email ne peut être associée qu'à un seul compte école. Votre clé d'activation officielle y sera transmise.
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -748,10 +915,20 @@ export default function SubscriptionPayment() {
 
                   <button
                     type="submit"
-                    className="px-6 py-3.5 bg-primary-600 hover:bg-primary-700 text-white font-extrabold text-sm rounded-xl shadow-lg shadow-primary-600/30 flex items-center gap-2 transition-all hover:scale-105"
+                    disabled={isCheckingEmail || !!emailError}
+                    className="px-6 py-3.5 bg-primary-600 hover:bg-primary-700 text-white font-extrabold text-sm rounded-xl shadow-lg shadow-primary-600/30 flex items-center gap-2 transition-all hover:scale-105 disabled:opacity-50 disabled:hover:scale-100 cursor-pointer"
                   >
-                    <span>Continuer vers le Paiement ({Number(finalPrice).toLocaleString('fr-FR')} FCFA)</span>
-                    <ArrowRight size={16} />
+                    {isCheckingEmail ? (
+                      <>
+                        <RefreshCw size={16} className="animate-spin" />
+                        <span>Vérification de l'email...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Continuer vers le Paiement ({Number(finalPrice).toLocaleString('fr-FR')} FCFA)</span>
+                        <ArrowRight size={16} />
+                      </>
+                    )}
                   </button>
                 </div>
               </form>
@@ -1067,6 +1244,278 @@ export default function SubscriptionPayment() {
                   Dès la validation, un email officiel de félicitations contenant votre <strong>Fiche d'Abonnement Certifiée</strong>, votre <strong>Clé de Licence (« MEG-... »)</strong> et votre code d'accès sera délivré à votre boîte de réception.
                 </p>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= STEP: USSD Prompt Waiting & Validation ================= */}
+        {step === 'ussd_wait' && (
+          <div className="max-w-3xl mx-auto bg-white rounded-3xl border border-amber-200 p-6 sm:p-10 shadow-xl relative overflow-hidden">
+            {/* Top pulse accent */}
+            <div className="absolute top-0 left-0 right-0 h-3 bg-gradient-to-r from-amber-400 via-orange-500 to-amber-600 animate-pulse" />
+
+            <div className="text-center mb-8">
+              <div className="w-20 h-20 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center mx-auto mb-4 shadow-inner ring-4 ring-amber-50">
+                <Smartphone size={40} className="animate-bounce" />
+              </div>
+
+              <div className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-black uppercase tracking-wider mb-2">
+                <Radio size={14} className="animate-pulse text-amber-600" />
+                <span>Demande de confirmation transmise</span>
+              </div>
+
+              <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+                Validation du Paiement Mobile Money
+              </h1>
+
+              <p className="text-slate-600 text-xs sm:text-sm max-w-lg mx-auto mt-2">
+                Une demande de prélèvement sécurisée a été émise vers l'opérateur <strong>{txDetails?.operator || payerOperator}</strong>.
+              </p>
+            </div>
+
+            {/* MANDATORY PROMPT NOTICE BANNER */}
+            <div className="bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300 rounded-2xl p-5 mb-8 shadow-xs">
+              <div className="flex items-start gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+                  <Smartphone size={22} className="animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-amber-950 tracking-tight">
+                    Ce numéro recevra la demande de confirmation (prompt USSD) pour valider le débit.
+                  </h3>
+                  <p className="text-xs text-amber-800 mt-1 font-medium leading-relaxed">
+                    Vérifiez l'écran du téléphone <strong>{txDetails?.payerPhone || payerPhoneNumber}</strong>. Saisissez votre code PIN secret Mobile Money sur le prompt qui apparaît pour autoriser le paiement de <strong>{Number(finalPrice).toLocaleString('fr-FR')} FCFA</strong>.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Transaction summary box */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 mb-8">
+              <h4 className="text-xs font-black text-slate-500 uppercase tracking-wider mb-3">
+                Détails de l'autorisation de débit
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                <div>
+                  <span className="text-slate-400 block font-semibold mb-0.5">Téléphone de débit :</span>
+                  <strong className="text-slate-900 font-mono text-sm">{txDetails?.payerPhone || payerPhoneNumber}</strong>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-semibold mb-0.5">Opérateur Mobile Money :</span>
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-white border border-slate-200 rounded-md font-extrabold text-slate-800">
+                    {txDetails?.operator || payerOperator}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-semibold mb-0.5">Montant à prélever :</span>
+                  <strong className="text-emerald-700 font-black text-base">{Number(finalPrice).toLocaleString('fr-FR')} FCFA</strong>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-semibold mb-0.5">Établissement rattaché :</span>
+                  <strong className="text-slate-800">{schoolName}</strong>
+                </div>
+              </div>
+
+              {txReference && (
+                <div className="mt-3 pt-3 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-500 font-mono">
+                  <span>Réf. Transaction : {txReference}</span>
+                  <span className="flex items-center gap-1 text-amber-700 font-bold">
+                    <Clock size={12} />
+                    Temps restant : {Math.floor(countdown / 60)}:{(countdown % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Step-by-step instructions */}
+            <div className="space-y-3 mb-8">
+              <h4 className="text-xs font-black text-slate-700 uppercase tracking-wider">
+                Instructions de validation :
+              </h4>
+              <div className="flex items-start gap-3 text-xs text-slate-600">
+                <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-800 font-bold flex items-center justify-center shrink-0 text-[10px]">1</span>
+                <span>Déverrouillez le téléphone <strong>{txDetails?.payerPhone || payerPhoneNumber}</strong>.</span>
+              </div>
+              <div className="flex items-start gap-3 text-xs text-slate-600">
+                <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-800 font-bold flex items-center justify-center shrink-0 text-[10px]">2</span>
+                <span>Sur la fenêtre contextuelle (prompt USSD) de <strong>{txDetails?.operator || payerOperator}</strong>, entrez votre code PIN de validation.</span>
+              </div>
+              <div className="flex items-start gap-3 text-xs text-slate-600">
+                <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-800 font-bold flex items-center justify-center shrink-0 text-[10px]">3</span>
+                <span>Dès que le débit est effectué, cliquez ci-dessous pour confirmer et activer votre compte école.</span>
+              </div>
+            </div>
+
+            {/* Validation Action */}
+            <div className="space-y-3">
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => handleConfirmSuccessfulPayment()}
+                className="w-full py-4 px-6 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-extrabold text-sm rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+              >
+                {isProcessing ? (
+                  <>
+                    <RefreshCw size={18} className="animate-spin" />
+                    <span>Vérification auprès de l'opérateur...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={18} />
+                    <span>J'ai validé le débit sur mon téléphone (Confirmer)</span>
+                    <ArrowRight size={16} />
+                  </>
+                )}
+              </button>
+
+              {/* Simulation buttons: Échec pour fonds insuffisants ou non-confirmation */}
+              <div className="pt-4 border-t border-slate-100">
+                <p className="text-[11px] font-bold text-slate-400 text-center mb-2 uppercase tracking-wider">
+                  Simulation & Tests de scénarios d'échec
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={() => handleTriggerPaymentFailure('insufficient_funds')}
+                    className="py-2.5 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <XCircle size={14} className="text-rose-500" />
+                    <span>Simuler Échec : Fonds Insuffisants</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={() => handleTriggerPaymentFailure('non_confirmation')}
+                    className="py-2.5 px-3 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <AlertOctagon size={14} className="text-amber-600" />
+                    <span>Simuler Échec : Non-confirmation</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="text-center pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStep('payment');
+                    setShowPayerModal(true);
+                  }}
+                  className="text-xs text-slate-500 hover:text-slate-800 font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <ArrowLeft size={14} />
+                  <span>Modifier le numéro ou choisir un autre moyen de paiement</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= STEP: Payment Failure & Account Creation Aborted ================= */}
+        {step === 'failed' && (
+          <div className="max-w-2xl mx-auto bg-white rounded-3xl border border-rose-200 p-8 sm:p-10 shadow-2xl relative overflow-hidden">
+            {/* Top Red Alert Banner */}
+            <div className="absolute top-0 left-0 right-0 h-3 bg-gradient-to-r from-rose-500 via-red-600 to-rose-700" />
+
+            <div className="text-center mb-8">
+              <div className="w-20 h-20 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-4 shadow-inner ring-4 ring-rose-50">
+                <XCircle size={44} strokeWidth={2.5} />
+              </div>
+
+              <span className="text-xs font-black uppercase tracking-widest text-rose-700 bg-rose-50 border border-rose-200 px-3.5 py-1 rounded-full inline-block mb-2">
+                Transaction Interrompue
+              </span>
+
+              <h1 className="text-3xl sm:text-4xl font-black text-rose-950 tracking-tight">
+                Échec de paiement
+              </h1>
+
+              <p className="text-slate-600 text-sm max-w-md mx-auto mt-2">
+                La transaction n'a pas pu être validée par l'opérateur de paiement.
+              </p>
+            </div>
+
+            {/* CRITICAL STATEMENT: Account creation aborted */}
+            <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-5 mb-6 text-left">
+              <div className="flex items-start gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+                  <AlertOctagon size={22} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-rose-950">
+                    L'opération de création du compte école a été interrompue.
+                  </h3>
+                  <p className="text-xs text-rose-800 mt-1 font-medium leading-relaxed">
+                    Conformément aux règles de sécurité, aucun montant n'a été débité, aucun compte établissement n'a été créé et aucune clé d'activation n'a été délivrée.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Failure Reason Box */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 mb-8 text-left space-y-3">
+              <h4 className="text-xs font-black text-slate-500 uppercase tracking-wider">
+                Motif de l'échec constaté :
+              </h4>
+              <div className="p-3.5 bg-white border border-rose-200 rounded-xl">
+                <div className="flex items-center gap-2 text-rose-800 font-extrabold text-sm mb-1">
+                  <AlertCircle size={16} className="text-rose-600 shrink-0" />
+                  <span>
+                    {failureCode === 'insufficient_funds'
+                      ? "Fonds insuffisants sur le compte de paiement"
+                      : failureCode === 'non_confirmation'
+                        ? "Non-confirmation ou délai de validation USSD dépassé"
+                        : (failureReason || "Rejet de la demande de prélèvement")}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed pl-6">
+                  {failureCode === 'insufficient_funds'
+                    ? `Le solde disponible sur votre compte Mobile Money (${txDetails?.payerPhone || payerPhoneNumber}) est inférieur au montant exigible de ${Number(finalPrice).toLocaleString('fr-FR')} FCFA. Veuillez recharger votre compte avant de réessayer.`
+                    : failureCode === 'non_confirmation'
+                      ? `La demande de débit USSD transmise au numéro ${txDetails?.payerPhone || payerPhoneNumber} n'a pas été confirmée avec le code secret dans le délai réglementaire.`
+                      : (failureReason || "La demande de règlement n'a pas pu aboutir auprès de votre opérateur.")}
+                </p>
+              </div>
+
+              {txReference && (
+                <p className="text-[11px] text-slate-400 font-mono">
+                  Référence de la tentative interrompue : {txReference}
+                </p>
+              )}
+            </div>
+
+            {/* Recovery Action Buttons */}
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setFailureReason(null);
+                  setFailureCode(null);
+                  setStep('payment');
+                  setShowPayerModal(true);
+                }}
+                className="w-full py-4 px-6 bg-primary-600 hover:bg-primary-700 active:scale-[0.99] text-white font-extrabold text-sm rounded-xl shadow-lg shadow-primary-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <RefreshCw size={18} />
+                <span>Réessayer avec un autre numéro ou opérateur</span>
+                <ArrowRight size={16} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setFailureReason(null);
+                  setFailureCode(null);
+                  setStep('info');
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <ArrowLeft size={16} />
+                <span>Modifier les informations de l'établissement</span>
+              </button>
             </div>
           </div>
         )}
@@ -1558,9 +2007,17 @@ export default function SubscriptionPayment() {
                         className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono font-bold"
                       />
                     </div>
-                    <p className="text-[11px] text-slate-500 mt-1">
-                      Ce numéro recevra la demande de confirmation (prompt USSD) pour valider le débit de {Number(finalPrice).toLocaleString('fr-FR')} FCFA.
-                    </p>
+                    <div className="mt-2.5 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-950">
+                      <Smartphone size={18} className="text-amber-600 shrink-0 mt-0.5 animate-pulse" />
+                      <div>
+                        <p className="font-bold">
+                          Ce numéro recevra la demande de confirmation (prompt USSD) pour valider le débit.
+                        </p>
+                        <p className="text-[11px] text-amber-700 mt-0.5 font-medium">
+                          En cas de solde insuffisant ou de non-confirmation, l'opération affichera un échec de paiement et la création du compte école sera immédiatement interrompue.
+                        </p>
+                      </div>
+                    </div>
                   </div>
 
                   <button

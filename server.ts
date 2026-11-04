@@ -1025,6 +1025,7 @@ async function initializeDatabase() {
   try { db.prepare("ALTER TABLE subscription_transactions ADD COLUMN remaining_amount REAL DEFAULT 0").run(); } catch(e){}
   try { db.prepare("ALTER TABLE subscription_transactions ADD COLUMN remaining_schedule TEXT").run(); } catch(e){}
   try { db.prepare("ALTER TABLE subscription_transactions ADD COLUMN modality_name TEXT").run(); } catch(e){}
+  try { db.prepare("ALTER TABLE subscription_transactions ADD COLUMN failure_reason TEXT").run(); } catch(e){}
   try { db.prepare("ALTER TABLE subscription_licenses ADD COLUMN total_amount REAL").run(); } catch(e){}
   try { db.prepare("ALTER TABLE subscription_licenses ADD COLUMN initial_percentage REAL DEFAULT 100").run(); } catch(e){}
   try { db.prepare("ALTER TABLE subscription_licenses ADD COLUMN initial_amount REAL").run(); } catch(e){}
@@ -19810,6 +19811,23 @@ function executeYearTransition(
         return res.status(400).json({ success: false, error: "Informations de l'établissement incomplètes." });
       }
 
+      // Règle stricte : Une adresse email ne peut être associée qu'à un seul compte école
+      const cleanSchoolEmail = email.toString().trim().toLowerCase();
+      const existingSchoolUser = db.prepare(`
+        SELECT u.id, u.email, u.school_id, s.nom as school_nom 
+        FROM utilisateurs u 
+        LEFT JOIN school_info s ON u.school_id = s.id 
+        WHERE LOWER(TRIM(u.email)) = ?
+      `).get(cleanSchoolEmail) as any;
+
+      if (existingSchoolUser && existingSchoolUser.school_id) {
+        return res.status(409).json({ 
+          success: false, 
+          code: "EMAIL_ALREADY_EXISTS", 
+          error: `Cette adresse email (${cleanSchoolEmail}) est déjà associée au compte école "${existingSchoolUser.school_nom || 'Établissement existant'}". Une adresse email ne peut être associée qu'à un seul compte école.` 
+        });
+      }
+
       const effectivePayerName = (payerName || adminNom || '').trim();
       if (!effectivePayerName) {
         return res.status(400).json({ success: false, error: "Veuillez renseigner le nom complet de la personne effectuant le paiement." });
@@ -20030,10 +20048,55 @@ function executeYearTransition(
         plan_name: tx.plan_name,
         amount: tx.amount,
         operator: tx.operator,
+        failure_reason: tx.failure_reason,
         validated_at: tx.validated_at
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: "Erreur de consultation de transaction." });
+    }
+  });
+
+  // Mobile Money: Interruption & Échec de paiement (fonds insuffisants, non confirmation, etc.)
+  app.post("/api/payments/mobile-money/fail", (req, res) => {
+    try {
+      const { reference, failure_code, reason } = req.body;
+      if (!reference) {
+        return res.status(400).json({ success: false, error: "Référence de paiement requise." });
+      }
+
+      const tx = db.prepare("SELECT * FROM subscription_transactions WHERE reference = ?").get(reference) as any;
+      if (!tx) {
+        return res.status(404).json({ success: false, error: "Transaction introuvable." });
+      }
+
+      let explicitReason = "Échec de paiement";
+      if (failure_code === 'insufficient_funds' || reason?.toLowerCase().includes('fond')) {
+        explicitReason = "Échec de paiement : Fonds insuffisants sur le compte de paiement.";
+      } else if (failure_code === 'non_confirmation' || reason?.toLowerCase().includes('non-confirmation') || reason?.toLowerCase().includes('délai') || reason?.toLowerCase().includes('expir')) {
+        explicitReason = "Échec de paiement : Non-confirmation de la demande de débit (prompt USSD) sur le téléphone.";
+      } else if (reason) {
+        explicitReason = `Échec de paiement : ${reason}`;
+      } else {
+        explicitReason = "Échec de paiement : L'opération a été rejetée ou n'a pas été confirmée.";
+      }
+
+      // Marquer la transaction comme 'failed' avec motif
+      db.prepare("UPDATE subscription_transactions SET status = 'failed', failure_reason = ?, validated_at = CURRENT_TIMESTAMP WHERE reference = ?")
+        .run(explicitReason, reference);
+
+      // Règle formelle : INTERROMPRE L'OPÉRATION DE CRÉATION DU COMPTE
+      // Aucun compte école n'est activé, aucun utilisateur n'est créé, aucune clé de licence n'est délivrée
+      res.json({
+        success: true,
+        status: 'failed',
+        failure_code: failure_code || 'payment_failed',
+        error: explicitReason,
+        message: explicitReason,
+        account_creation_aborted: true
+      });
+    } catch (err: any) {
+      console.error("Error failing mobile money transaction:", err);
+      res.status(500).json({ success: false, error: "Erreur lors de l'enregistrement de l'échec de paiement: " + (err?.message || err) });
     }
   });
 
@@ -20361,7 +20424,7 @@ function executeYearTransition(
   // Mobile Money: Confirm and validate payment (Funds received on Super Admin collector account)
   app.post("/api/payments/mobile-money/confirm", async (req, res) => {
     try {
-      const { reference } = req.body;
+      const { reference, simulate_failure, failure_code, failure_reason } = req.body;
       if (!reference) {
         return res.status(400).json({ success: false, error: "Référence requise." });
       }
@@ -20369,6 +20432,53 @@ function executeYearTransition(
       const tx = db.prepare("SELECT * FROM subscription_transactions WHERE reference = ?").get(reference) as any;
       if (!tx) {
         return res.status(404).json({ success: false, error: "Transaction introuvable." });
+      }
+
+      // Si échec notifié ou simulé (fonds insuffisants, non-confirmation, ou transaction échouée)
+      if (simulate_failure || failure_code || tx.status === 'failed') {
+        let explicitReason = "Échec de paiement";
+        if (failure_code === 'insufficient_funds' || failure_reason?.toLowerCase().includes('fond')) {
+          explicitReason = "Échec de paiement : Fonds insuffisants sur le compte de paiement.";
+        } else if (failure_code === 'non_confirmation' || failure_reason?.toLowerCase().includes('non')) {
+          explicitReason = "Échec de paiement : Non-confirmation de la demande de débit (prompt USSD) sur le téléphone.";
+        } else {
+          explicitReason = failure_reason || tx.failure_reason || "Échec de paiement : Opération non validée.";
+        }
+
+        db.prepare("UPDATE subscription_transactions SET status = 'failed', failure_reason = ?, validated_at = CURRENT_TIMESTAMP WHERE reference = ?")
+          .run(explicitReason, reference);
+
+        return res.status(400).json({
+          success: false,
+          status: 'failed',
+          failure_code: failure_code || 'payment_failed',
+          error: explicitReason,
+          message: `${explicitReason} L'opération de création du compte école a été interrompue.`,
+          account_creation_aborted: true
+        });
+      }
+
+      // Règle stricte : Une adresse email ne peut être associée qu'à un seul compte école
+      const cleanEmail = tx.email ? tx.email.toString().trim().toLowerCase() : '';
+      const existingSchoolUser = db.prepare(`
+        SELECT u.id, u.email, u.school_id, s.nom as school_nom 
+        FROM utilisateurs u 
+        LEFT JOIN school_info s ON u.school_id = s.id 
+        WHERE LOWER(TRIM(u.email)) = ?
+      `).get(cleanEmail) as any;
+
+      if (existingSchoolUser && existingSchoolUser.school_id) {
+        const errorMsg = `Cette adresse email (${cleanEmail}) est déjà associée au compte école "${existingSchoolUser.school_nom || 'Établissement existant'}". Une adresse email ne peut être associée qu'à un seul compte école.`;
+        db.prepare("UPDATE subscription_transactions SET status = 'failed', failure_reason = ? WHERE reference = ?")
+          .run(errorMsg, reference);
+
+        return res.status(409).json({
+          success: false,
+          status: 'failed',
+          code: "EMAIL_ALREADY_EXISTS",
+          error: errorMsg,
+          account_creation_aborted: true
+        });
       }
 
       // Check if already completed
@@ -21631,10 +21741,18 @@ Cette clé servira lors du premier accès de votre établissement au système po
       if (!email) {
         return res.status(400).json({ available: false, error: "Email requis" });
       }
-      const existing = db.prepare("SELECT id FROM utilisateurs WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))").get(email);
+      const existing = db.prepare(`
+        SELECT u.id, u.email, u.school_id, s.nom as school_nom 
+        FROM utilisateurs u 
+        LEFT JOIN school_info s ON u.school_id = s.id 
+        WHERE LOWER(TRIM(u.email)) = LOWER(TRIM(?))
+      `).get(email) as any;
       res.json({
         available: !existing,
-        message: existing ? "Cette adresse email est déjà associée à un compte." : "Adresse email disponible."
+        schoolName: existing?.school_nom || null,
+        message: existing 
+          ? `Cette adresse email est déjà associée au compte école "${existing.school_nom || 'Établissement existant'}". Une adresse email ne peut être associée qu'à un seul compte école.` 
+          : "Adresse email disponible."
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
