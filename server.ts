@@ -194,43 +194,66 @@ if (!fs.existsSync(BACKUPS_DIR)) fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 const AUTO_BACKUP_PATH = path.join(BACKUPS_DIR, 'auto_persistence_checkpoint.sql');
 
 async function restoreFromCheckpoint() {
-  const schoolCount = db.prepare("SELECT COUNT(*) as count FROM school_info").get() as any;
-  if (schoolCount && schoolCount.count > 0) {
-    // Database already has data, don't overwrite
-    return;
-  }
-
-  console.log("[Persistence] Database appears empty. Checking for recovery options...");
-
-  // 1. Try Cloud Recovery First (Firestore) - Only if not in offline mode
-  if (!OFFLINE_MODE) {
-    try {
-      console.log("[Persistence] Checking Cloud Checkpoint (Firestore)...");
-      const cloudDocSnap = await adminDb.collection('backups').doc('global_checkpoint').get();
-      if (cloudDocSnap.exists) {
-        const data = cloudDocSnap.data();
-        if (data?.sql_dump) {
-          console.log("[Persistence] Found Cloud Checkpoint. Restoring...");
-          db.exec(data.sql_dump);
-          console.log("[Persistence] Cloud auto-restore completed successfully.");
-          return;
-        }
+  try {
+    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='school_info'").get();
+    if (tableExists) {
+      const schoolCount = db.prepare("SELECT COUNT(*) as count FROM school_info").get() as any;
+      if (schoolCount && schoolCount.count > 0) {
+        // Database already has data, don't overwrite
+        return;
       }
-    } catch (err) {
-      console.error("[Persistence] Cloud recovery check failed:", err);
     }
-  }
 
-  // 2. Fallback to Local Checkpoint
-  if (fs.existsSync(AUTO_BACKUP_PATH)) {
-    console.log("[Persistence] Attempting auto-restore from local checkpoint...");
-    try {
-      const sql = fs.readFileSync(AUTO_BACKUP_PATH, 'utf8');
-      db.exec(sql);
-      console.log("[Persistence] Local auto-restore completed successfully.");
-    } catch (err) {
-      console.error("[Persistence] Local auto-restore failed:", err);
+    console.log("[Persistence] Database appears empty. Checking for recovery options...");
+
+    // 1. Try Cloud Recovery First (Firestore) - Only if not in offline mode
+    if (!OFFLINE_MODE) {
+      try {
+        console.log("[Persistence] Checking Cloud Checkpoint (Firestore)...");
+        const cloudDocSnap = await adminDb.collection('backups').doc('global_checkpoint').get();
+        if (cloudDocSnap.exists) {
+          const data = cloudDocSnap.data();
+          if (data?.sql_dump) {
+            console.log("[Persistence] Found Cloud Checkpoint. Restoring...");
+            try {
+              if (db.inTransaction) {
+                try { db.exec("ROLLBACK;"); } catch(e) {}
+              }
+              db.exec(data.sql_dump);
+              console.log("[Persistence] Cloud auto-restore completed successfully.");
+              return;
+            } catch (sqlErr) {
+              if (db.inTransaction) {
+                try { db.exec("ROLLBACK;"); } catch(e) {}
+              }
+              console.warn("[Persistence] Cloud auto-restore SQL error:", sqlErr);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[Persistence] Cloud recovery check failed:", err);
+      }
     }
+
+    // 2. Fallback to Local Checkpoint
+    if (fs.existsSync(AUTO_BACKUP_PATH)) {
+      console.log("[Persistence] Attempting auto-restore from local checkpoint...");
+      try {
+        if (db.inTransaction) {
+          try { db.exec("ROLLBACK;"); } catch(e) {}
+        }
+        const sql = fs.readFileSync(AUTO_BACKUP_PATH, 'utf8');
+        db.exec(sql);
+        console.log("[Persistence] Local auto-restore completed successfully.");
+      } catch (err) {
+        if (db.inTransaction) {
+          try { db.exec("ROLLBACK;"); } catch(e) {}
+        }
+        console.error("[Persistence] Local auto-restore failed:", err);
+      }
+    }
+  } catch (err) {
+    console.warn("[Persistence] Checkpoint recovery notice:", err);
   }
 }
 
@@ -288,7 +311,9 @@ async function saveCheckpoint() {
 }
 
 // Initial restore check
-restoreFromCheckpoint();
+restoreFromCheckpoint().catch((err) => {
+  console.warn("[Persistence] Startup restore check notice:", err);
+});
 
 // Run an initial checkpoint shortly after startup to ensure cloud persistence is initialized
 setTimeout(saveCheckpoint, 3000);
@@ -925,6 +950,8 @@ async function initializeDatabase() {
     parent_admin_id INTEGER,
     can_write INTEGER DEFAULT 1,
     last_seen TEXT,
+    question_secrete TEXT,
+    reponse_secrete TEXT,
     school_id INTEGER,
     FOREIGN KEY(parent_admin_id) REFERENCES utilisateurs(id),
     FOREIGN KEY(school_id) REFERENCES school_info(id),
@@ -2725,6 +2752,13 @@ try {
   ]);
   db.prepare("UPDATE utilisateurs SET approuve = 1, is_first_login = 0, permissions = ? WHERE role = 'admin'").run(allPermissions);
 } catch (e) {}
+
+// Attempt restoring from checkpoint if database is empty
+try {
+  await restoreFromCheckpoint();
+} catch (e) {
+  console.warn("[Persistence] Checkpoint restore notice:", e);
+}
 
 // Seed default school if none exists
 const schoolExists = db.prepare("SELECT * FROM school_info").get();
