@@ -65,7 +65,7 @@ export const WorkspacePage: React.FC = () => {
       }
     } catch (err: any) {
       if (err?.code === 'auth/popup-closed-by-user' || err?.message?.includes('popup-closed-by-user')) {
-        toast.info('Connexion annulée.');
+        toast('Connexion annulée.');
       } else if (err?.code === 'auth/popup-blocked' || err?.message?.includes('popup-blocked')) {
         setPopupBlocked(true);
         toast.error('La fenêtre de connexion a été bloquée par votre navigateur. Autorisez les pop-ups ou utilisez le bouton de redirection.', { duration: 6000 });

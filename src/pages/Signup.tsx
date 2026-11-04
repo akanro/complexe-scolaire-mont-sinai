@@ -81,91 +81,26 @@ export default function Signup() {
   // Handle Step 1 validation -> go to Step 2 (Choose Plan)
   const handleNextToPlan = (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    if (!nom.trim() || !schoolName.trim() || !email.trim() || !password) {
-      setError('Veuillez remplir tous les champs obligatoires.');
-      return;
-    }
-    if (password !== confirmPassword) {
-      setError('Les mots de passe ne correspondent pas.');
-      return;
-    }
-
-    const passwordEval = evaluatePassword(password);
-    if (!passwordEval.isStrictValid) {
-      setError('Sécurité du mot de passe insuffisante : il doit comporter au moins 8 caractères et inclure au moins une majuscule, une minuscule et un chiffre.');
-      return;
-    }
-
-    setStep(2);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const notice = "momentanément indisponible, les créations de compte sont temporairement suspendues. Veuillez contacter l'administration.";
+    setError(notice);
+    toast.error(notice);
+    return;
   };
 
   // Step 2 validation -> Redirect to payment page with configured methods
   const handleConfirmPlanAndSignup = () => {
-    navigate(`/paiement-abonnement?plan=${selectedPlan}&schoolName=${encodeURIComponent(schoolName.trim())}&email=${encodeURIComponent(email.trim())}&adminNom=${encodeURIComponent(nom.trim())}`, {
-      state: { password }
-    });
+    const notice = "momentanément indisponible, les créations de compte sont temporairement suspendues. Veuillez contacter l'administration.";
+    setError(notice);
+    toast.error(notice);
+    return;
   };
 
   // Standard signup handler
-  const handleFinalSignup = async (planId: string, paymentMethod: string) => {
-    setError(null);
-    setLoading(true);
-
-    const cleanEmail = email.trim().toLowerCase();
-
-    try {
-      const response = await apiFetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          nom: nom.trim(), 
-          email: cleanEmail, 
-          password, 
-          schoolName: schoolName.trim(), 
-          plan: planId, 
-          paymentMethod
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        let msg = data.error || 'Erreur lors de la création du compte.';
-        if (
-          response.status === 409 || 
-          data.code === 'EMAIL_ALREADY_EXISTS' ||
-          msg.toLowerCase().includes('déjà utilisé') ||
-          msg.toLowerCase().includes('déjà associée')
-        ) {
-          msg = `Cette adresse email (${cleanEmail}) est déjà associée à un compte établissement. Veuillez vous connecter directement.`;
-        }
-        setError(msg);
-        toast.error(msg);
-        setStep(1);
-      } else {
-        toast.success('Compte créé avec succès !');
-        if (data.otp) {
-          setStep(3);
-          if (data.simulated) {
-            setSimulatedOtpNotice(`Code de validation généré : ${data.otp}`);
-          }
-        } else {
-          navigate('/login');
-        }
-      }
-    } catch (err: any) {
-      const errText = err?.message || '';
-      if (errText.includes('409') || errText.toLowerCase().includes('déjà')) {
-        setError(`Cette adresse email (${cleanEmail}) est déjà associée à un compte.`);
-      } else {
-        setError(errText || 'Erreur de connexion au serveur.');
-      }
-      setStep(1);
-    } finally {
-      setLoading(false);
-    }
+  const handleFinalSignup = async (_planId?: string, _paymentMethod?: string) => {
+    const notice = "momentanément indisponible, les créations de compte sont temporairement suspendues. Veuillez contacter l'administration.";
+    setError(notice);
+    toast.error(notice);
+    return;
   };
 
   // Verify OTP handler
@@ -247,6 +182,14 @@ export default function Signup() {
       )}>
         <div className="bg-slate-900/80 backdrop-blur-2xl py-8 px-5 sm:px-10 shadow-2xl border border-slate-800 rounded-[2.5rem]">
           
+          {/* Alerte Indisponibilité Momentanée */}
+          <div className="mb-6 p-4 rounded-2xl bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 text-amber-400 mt-0.5" />
+            <div className="flex-1 space-y-1">
+              <p className="font-bold text-white text-sm">momentanément indisponible</p>
+              <p>Les créations de compte sont temporairement suspendues pour maintenance administrative. Veuillez contacter l'administration pour toute demande d'accès ou vous connecter avec un compte existant.</p>
+            </div>
+          </div>
           {/* Notice when arriving with unlinked email */}
           {unlinkedNotice && (
             <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-medium flex items-start gap-3 animate-in fade-in duration-300">

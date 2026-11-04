@@ -343,6 +343,14 @@ export default function SubscriptionPayment() {
 
   const handleProceedToPayment = async (e: React.FormEvent) => {
     e.preventDefault();
+    const notice = "momentanément indisponible, les créations de compte sont temporairement suspendues. Veuillez contacter l'administration.";
+    setEmailError(notice);
+    toast.error(notice);
+    return;
+  };
+
+  const handleProceedToPaymentOld = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!schoolName.trim()) {
       toast.error("Veuillez renseigner le nom de l'établissement scolaire.");
       return;
@@ -672,6 +680,14 @@ export default function SubscriptionPayment() {
               <p className="text-xs text-slate-500 mb-6">
                 Renseignez ces détails. Votre clé d'activation officielle et votre reçu de conformité y seront rattachés et envoyés.
               </p>
+
+              <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-900 text-xs font-medium flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 flex-shrink-0 text-amber-600 mt-0.5" />
+                <div className="flex-1 space-y-1">
+                  <p className="font-bold text-amber-950 text-sm">momentanément indisponible</p>
+                  <p>Les créations de compte sont temporairement suspendues. Veuillez contacter l'administration pour toute demande d'accès.</p>
+                </div>
+              </div>
 
               <form onSubmit={handleProceedToPayment} className="space-y-4">
                 <div>

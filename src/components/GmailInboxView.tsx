@@ -62,7 +62,7 @@ export default function GmailInboxView() {
       toast.success("Compte Gmail connecté avec succès !");
     } catch (err: any) {
       if (err?.code === 'auth/popup-closed-by-user' || err?.message?.includes('popup-closed-by-user')) {
-        toast.info("Connexion annulée.");
+        toast("Connexion annulée.");
       } else if (err?.code === 'auth/popup-blocked' || err?.message?.includes('popup-blocked')) {
         toast.error("La fenêtre de connexion a été bloquée par votre navigateur. Veuillez autoriser les fenêtres pop-up.", { duration: 6000 });
       } else {

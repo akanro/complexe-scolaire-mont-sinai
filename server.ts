@@ -2778,6 +2778,7 @@ try {
   const parentPass = bcrypt.hashSync("password", 10);
   const superPass = bcrypt.hashSync("SuperAdmin2026!", 10);
   const elevePass = bcrypt.hashSync("password", 10);
+  const fabricePass = bcrypt.hashSync("Fabricenew@2026!", 10);
 
   const allPerms = JSON.stringify([
     '/', '/classes', '/eleves', '/promotions', '/enseignants', 
@@ -2786,6 +2787,7 @@ try {
   ]);
 
   const demoUsers = [
+    { nom: 'Super Administrateur Fabrice', email: 'amfabricenew@gmail.com', identifiant: 'amfabricenew', pass: fabricePass, initialPass: 'Fabricenew@2026!', role: 'super_admin', perms: '[]' },
     { nom: 'Super Administrateur (Propriétaire SaaS)', email: 'ayedeguef@gmail.com', identifiant: 'superadmin', pass: superPass, initialPass: 'SuperAdmin2026!', role: 'super_admin', perms: '[]' },
     { nom: 'Direction SaaS Mégafixa', email: 'superadmin@megafixa.com', identifiant: 'admin.saas', pass: superPass, initialPass: 'SuperAdmin2026!', role: 'super_admin', perms: '[]' },
     { nom: 'Super Administrateur Backup', email: 'ayedegue@mail.com', identifiant: 'ayedegue', pass: superPass, initialPass: 'SuperAdmin2026!', role: 'super_admin', perms: '[]' },
@@ -19832,6 +19834,15 @@ function executeYearTransition(
         payerEmail
       } = req.body;
 
+      // Suspension momentanée de la création de nouveaux comptes école
+      if (schoolName || email) {
+        return res.status(503).json({
+          success: false,
+          code: "REGISTRATION_UNAVAILABLE",
+          error: "momentanément indisponible, les créations de compte sont temporairement suspendues. Veuillez contacter l'administration."
+        });
+      }
+
       const isCard = (paymentMethodType === 'card' || operator === 'CARTE' || !!cardNumber);
       const cycle = (billingCycle || modalite || 'annuel').toString().toLowerCase().trim();
       const totalAmt = Number(totalPlanAmount || (cycle === 'annuel' ? amount : Math.round(Number(amount) / 0.45)));
@@ -21602,6 +21613,14 @@ Cette clé servira lors du premier accès de votre établissement au système po
   });
 
   const handleSignupRequest = async (req: any, res: any) => {
+    return res.status(503).json({
+      success: false,
+      code: "REGISTRATION_UNAVAILABLE",
+      error: "momentanément indisponible, les créations de compte sont temporairement suspendues. Veuillez contacter l'administration pour toute demande d'accès."
+    });
+  };
+
+  const handleSignupRequestOld = async (req: any, res: any) => {
     const { nom, email: rawEmail, password, schoolName, plan, paymentMethod, paymentReference } = req.body;
     if (!rawEmail || !nom || !password || !schoolName) {
       return res.status(400).json({ success: false, error: "Tous les champs sont requis" });
