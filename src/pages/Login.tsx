@@ -20,7 +20,9 @@ import {
   ExternalLink,
   X,
   Check,
-  Crown
+  Crown,
+  Copy,
+  Globe
 } from 'lucide-react';
 import { apiFetch } from '../utils/api';
 import toast from 'react-hot-toast';
@@ -51,6 +53,11 @@ export default function Login() {
   const [activateEmailInput, setActivateEmailInput] = useState('');
   const [activatingKey, setActivatingKey] = useState(false);
   const [activatedPlanResult, setActivatedPlanResult] = useState<any>(null);
+
+  // Unauthorized domain guidance modal
+  const [showUnauthorizedDomainModal, setShowUnauthorizedDomainModal] = useState(false);
+  const [detectedHost, setDetectedHost] = useState('');
+  const [domainCopied, setDomainCopied] = useState(false);
 
   const handleActivateSubscriptionKey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -226,6 +233,13 @@ export default function Login() {
       }
       if (fbErr?.code === 'auth/popup-blocked') {
         toast.error("La fenêtre de connexion Google a été bloquée par votre navigateur. Veuillez autoriser les fenêtres pop-up.");
+        return;
+      }
+      if (fbErr?.code === 'auth/unauthorized-domain' || fbErr?.message?.includes('unauthorized-domain')) {
+        const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
+        setDetectedHost(currentHost);
+        setShowUnauthorizedDomainModal(true);
+        toast.error("Domaine non autorisé dans Firebase Authentication", { duration: 6000 });
         return;
       }
       console.warn('[Google Auth Error]:', fbErr);
@@ -989,6 +1003,111 @@ export default function Login() {
                 </div>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Firebase Unauthorized Domain Guidance Modal */}
+      {showUnauthorizedDomainModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-3xl w-full max-w-xl p-6 sm:p-8 space-y-6 shadow-2xl relative text-left">
+            <button
+              type="button"
+              onClick={() => setShowUnauthorizedDomainModal(false)}
+              className="absolute top-5 right-5 text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-all cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/40 flex-shrink-0 shadow-lg shadow-amber-500/10">
+                <Globe size={26} />
+              </div>
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-[10px] font-black uppercase tracking-wider border border-amber-500/30">
+                  <AlertCircle size={12} className="text-amber-400" />
+                  <span>Sécurité Firebase Authentication</span>
+                </div>
+                <h3 className="text-lg font-black text-white">
+                  Autorisation de domaine requise
+                </h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Firebase bloque la connexion Google car ce domaine de déploiement n'a pas encore été déclaré dans les domaines autorisés du projet Firebase <span className="text-emerald-400 font-mono font-bold">chrome-pride-dh7sp</span>.
+                </p>
+              </div>
+            </div>
+
+            {/* Domain display & copy */}
+            <div className="p-4 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  Domaine détecté à ajouter :
+                </span>
+                <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                  Projet: chrome-pride-dh7sp
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl font-mono text-xs text-amber-300 select-all overflow-x-auto">
+                  {detectedHost || (typeof window !== 'undefined' ? window.location.hostname : 'onrender.com')}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const domainToCopy = detectedHost || (typeof window !== 'undefined' ? window.location.hostname : 'onrender.com');
+                    navigator.clipboard.writeText(domainToCopy);
+                    setDomainCopied(true);
+                    toast.success("Domaine copié !");
+                    setTimeout(() => setDomainCopied(false), 2500);
+                  }}
+                  className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-xl border border-slate-600 transition-all flex items-center gap-1.5 cursor-pointer"
+                >
+                  {domainCopied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                  <span>{domainCopied ? 'Copié' : 'Copier'}</span>
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                💡 <strong className="text-slate-300">Recommandation :</strong> Ajoutez simplement <span className="text-emerald-400 font-mono font-bold">onrender.com</span> dans Firebase pour autoriser immédiatement tous vos déploiements Render.
+              </p>
+            </div>
+
+            {/* Resolution Steps */}
+            <div className="space-y-2.5 text-xs text-slate-300">
+              <p className="font-bold text-white uppercase text-[11px] tracking-wider">
+                Étapes simples pour l'activer en 30 secondes :
+              </p>
+              <ol className="list-decimal list-inside space-y-1.5 text-slate-300 text-xs pl-1">
+                <li>
+                  Cliquez sur le bouton ci-dessous pour ouvrir la console Firebase.
+                </li>
+                <li>
+                  Dans l'onglet <strong className="text-white">Paramètres (Settings)</strong>, descendez à la section <strong className="text-white">Domaines autorisés (Authorized domains)</strong>.
+                </li>
+                <li>
+                  Cliquez sur <strong className="text-emerald-400">Ajouter un domaine</strong>, saisissez <code className="bg-slate-800 px-1.5 py-0.5 rounded text-amber-300 font-mono">onrender.com</code> puis validez.
+                </li>
+              </ol>
+            </div>
+
+            {/* Action buttons */}
+            <div className="pt-2 flex flex-col sm:flex-row gap-3">
+              <a
+                href="https://console.firebase.google.com/project/chrome-pride-dh7sp/authentication/settings"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-1 py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2 text-center cursor-pointer"
+              >
+                <span>Ouvrir la Console Firebase</span>
+                <ExternalLink size={15} />
+              </a>
+              <button
+                type="button"
+                onClick={() => setShowUnauthorizedDomainModal(false)}
+                className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <span>Connexion Email & Mot de passe</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
