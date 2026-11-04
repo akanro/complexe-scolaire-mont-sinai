@@ -141,12 +141,12 @@ export async function handleStaticApiFallback(url: string, init?: RequestInit): 
     const list = tables['school_info'] || [];
     return okJson(list[0] || {
       id: 1,
-      nom: "Complexe Scolaire MONT SINAÏ",
+      nom: "MEGAFIXAEDUC_PRO",
       adresse: "Cotonou, Bénin",
       telephone: "+229 01 61 10 79 18",
       email: "megafixaservices01@gmail.com",
       couleur_primaire: "#10b981",
-      code_ecole: "MONT_SINAI"
+      code_ecole: "MEGAFIXAEDUC_PRO"
     });
   }
 

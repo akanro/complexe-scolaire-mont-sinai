@@ -1,6 +1,6 @@
 {
-  "name": "Complexe Scolaire MONT SINAÏ",
-  "description": "Système complet de gestion scolaire moderne avec installation locale (PWA) et utilisation hors ligne. Solution gratuite pour tous les établissements.",
+  "name": "MEGAFIXAEDUC_PRO",
+  "description": "MEGAFIXAEDUC_PRO - Système complet de gestion scolaire moderne avec installation locale (PWA) et synchronisation intelligente.",
   "requestFramePermissions": [
     "geolocation"
   ],

@@ -27213,7 +27213,7 @@ Tu disposes d'une maîtrise absolue de TOUTES les fonctionnalités, calculs, flu
         if (fs.existsSync(indexPath)) {
           res.sendFile(indexPath);
         } else {
-          res.status(200).send("<!DOCTYPE html><html><head><title>MégafixaEduc Pro</title></head><body>Application initialisée avec succès.</body></html>");
+          res.status(200).send("<!DOCTYPE html><html><head><title>MEGAFIXAEDUC_PRO</title></head><body>Application initialisée avec succès.</body></html>");
         }
       });
     }

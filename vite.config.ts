@@ -48,9 +48,9 @@ export default defineConfig(({mode}) => {
           ]
         },
         manifest: {
-          name: 'MégafixaEduc Pro',
-          short_name: 'Mégafixa',
-          description: 'Système complet de gestion scolaire moderne',
+          name: 'MEGAFIXAEDUC_PRO',
+          short_name: 'MEGAFIXAEDUC_PRO',
+          description: 'MEGAFIXAEDUC_PRO - Système complet de gestion scolaire moderne',
           theme_color: '#10b981',
           background_color: '#ffffff',
           display: 'standalone',
