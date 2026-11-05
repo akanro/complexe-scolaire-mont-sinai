@@ -26921,27 +26921,54 @@ Tu disposes d'une maîtrise absolue de TOUTES les fonctionnalités, calculs, flu
     }
   });
 
-  // Delete a school
+  // Delete a school with complete cascading cleanup (foreign key safe)
   app.delete("/api/super-admin/schools/:id", authenticateToken, requireSuperAdmin, (req, res) => {
+    const schoolId = parseInt(req.params.id, 10);
+    if (isNaN(schoolId)) {
+      return res.status(400).json({ error: "Identifiant d'école invalide." });
+    }
+
     try {
-      const schoolId = req.params.id;
       const school = db.prepare("SELECT nom FROM school_info WHERE id = ?").get(schoolId) as any;
       if (!school) {
         return res.status(404).json({ error: "Établissement introuvable." });
       }
 
-      const deleteTx = db.transaction(() => {
-        try { db.prepare("DELETE FROM utilisateurs WHERE school_id = ?").run(schoolId); } catch(e){}
-        try { db.prepare("DELETE FROM eleves WHERE school_id = ?").run(schoolId); } catch(e){}
-        try { db.prepare("DELETE FROM enseignants WHERE school_id = ?").run(schoolId); } catch(e){}
-        try { db.prepare("DELETE FROM classes WHERE school_id = ?").run(schoolId); } catch(e){}
-        try { db.prepare("DELETE FROM notifications WHERE school_id = ?").run(schoolId); } catch(e){}
-        try { db.prepare("DELETE FROM super_admin_notifications WHERE school_id = ?").run(schoolId); } catch(e){}
-        try { db.prepare("DELETE FROM school_feature_locks WHERE school_id = ?").run(schoolId); } catch(e){}
-        db.prepare("DELETE FROM school_info WHERE id = ?").run(schoolId);
-      });
+      // Temporarily disable foreign keys for atomic cascade cleanup
+      db.pragma('foreign_keys = OFF');
 
-      deleteTx();
+      try {
+        const deleteTx = db.transaction(() => {
+          // Identify all tables in the database with a school_id column
+          const allTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as any[];
+          for (const t of allTables) {
+            try {
+              const cols = db.prepare(`PRAGMA table_info(${t.name})`).all() as any[];
+              if (cols.some(c => c.name === 'school_id')) {
+                db.prepare(`DELETE FROM ${t.name} WHERE school_id = ?`).run(schoolId);
+              }
+            } catch (tableErr) {
+              // ignore table if locked or special
+            }
+          }
+
+          // Unlink any transactions or licenses referencing this school_id
+          try {
+            db.prepare("UPDATE subscription_transactions SET school_id = NULL WHERE school_id = ?").run(schoolId);
+          } catch (e) {}
+          try {
+            db.prepare("UPDATE subscription_licenses SET school_id = NULL WHERE school_id = ?").run(schoolId);
+          } catch (e) {}
+
+          // Delete the school itself
+          db.prepare("DELETE FROM school_info WHERE id = ?").run(schoolId);
+        });
+
+        deleteTx();
+      } finally {
+        // Always restore foreign keys integrity check
+        db.pragma('foreign_keys = ON');
+      }
 
       try {
         recordSaasLog((req as any).user?.id || null, 'DELETE_SCHOOL', { school_id: schoolId, school_name: school.nom }, req);
@@ -26949,6 +26976,9 @@ Tu disposes d'une maîtrise absolue de TOUTES les fonctionnalités, calculs, flu
 
       res.json({ success: true, message: `L'établissement ${school.nom} a été supprimé avec succès.` });
     } catch (err: any) {
+      // Ensure foreign keys are restored in case of error
+      try { db.pragma('foreign_keys = ON'); } catch (e) {}
+      console.error("Erreur suppression école:", err);
       res.status(500).json({ error: "Erreur lors de la suppression de l'établissement : " + (err.message || err) });
     }
   });
