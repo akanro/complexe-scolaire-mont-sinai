@@ -27,11 +27,14 @@ import {
   Lock,
   History,
   Activity,
-  Sparkles
+  Sparkles,
+  School,
+  Check
 } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import { toggleAIAssistant } from '../AIAssistantWidget';
 import logo from '../../LOGO_MEGFIXAEDEUC_PRO.png';
@@ -176,6 +179,69 @@ export default function SuperAdminLayout({ children }: { children: React.ReactNo
       }
     });
   }, [location.pathname]);
+
+  // Real-time notifications for Super Admin
+  const [notifications, setNotifications] = React.useState<any[]>([]);
+  const [unreadCount, setUnreadCount] = React.useState(0);
+  const [showNotifDropdown, setShowNotifDropdown] = React.useState(false);
+  const prevUnreadRef = React.useRef<number | null>(null);
+
+  const fetchNotifications = React.useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const res = await fetch('/api/super-admin/notifications', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const newUnread = data.unreadCount || 0;
+        
+        // Notify Super Admin if new school registrations occur
+        if (prevUnreadRef.current !== null && newUnread > prevUnreadRef.current) {
+          const newest = data.notifications?.find((n: any) => n.lu === 0);
+          if (newest) {
+            toast.success(`🏫 ${newest.titre}\n${newest.message}`, {
+              duration: 8000,
+              icon: '🔔'
+            });
+          }
+        }
+        prevUnreadRef.current = newUnread;
+        setNotifications(data.notifications || []);
+        setUnreadCount(newUnread);
+      }
+    } catch (e) {
+      // background silent poll
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 20000);
+    return () => clearInterval(interval);
+  }, [fetchNotifications]);
+
+  const markNotificationsAsRead = async (id?: number) => {
+    try {
+      const token = localStorage.getItem('token');
+      await fetch('/api/super-admin/notifications/mark-read', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ id, all: !id })
+      });
+      if (id) {
+        setNotifications(prev => prev.map(n => n.id === id ? { ...n, lu: 1 } : n));
+        setUnreadCount(prev => Math.max(0, prev - 1));
+      } else {
+        setNotifications(prev => prev.map(n => ({ ...n, lu: 1 })));
+        setUnreadCount(0);
+      }
+    } catch (e) {}
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
@@ -340,10 +406,117 @@ export default function SuperAdminLayout({ children }: { children: React.ReactNo
           </div>
 
           <div className="flex items-center gap-3">
-            <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-full relative">
-              <Bell size={20} />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-rose-500 rounded-full border-2 border-white"></span>
-            </button>
+            {/* Real-time Notification Dropdown */}
+            <div className="relative">
+              <button 
+                onClick={() => setShowNotifDropdown(!showNotifDropdown)}
+                className={cn(
+                  "p-2 rounded-full relative transition-colors cursor-pointer",
+                  showNotifDropdown ? "bg-indigo-50 text-indigo-600" : "text-slate-500 hover:bg-slate-100"
+                )}
+                title="Notifications Système Super Admin"
+              >
+                <Bell size={20} />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 px-1.5 py-0.2 min-w-[18px] h-[18px] bg-rose-500 text-white rounded-full text-[10px] font-black flex items-center justify-center border-2 border-white animate-pulse">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              <AnimatePresence>
+                {showNotifDropdown && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                    className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-slate-200 z-50 overflow-hidden text-left"
+                  >
+                    <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Bell size={16} className="text-indigo-600" />
+                        <h4 className="text-sm font-bold text-slate-900">Notifications Système</h4>
+                        {unreadCount > 0 && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-700">
+                            {unreadCount} nouvelle{unreadCount > 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+                      {unreadCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => markNotificationsAsRead()}
+                          className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
+                        >
+                          Tout marquer comme lu
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
+                      {notifications.length === 0 ? (
+                        <div className="p-8 text-center text-slate-400">
+                          <School className="w-8 h-8 mx-auto mb-2 opacity-30 text-indigo-500" />
+                          <p className="text-xs font-semibold">Aucune notification pour le moment</p>
+                          <p className="text-[10px] text-slate-400 mt-1">Vous serez notifié dès qu'une nouvelle école est créée.</p>
+                        </div>
+                      ) : (
+                        notifications.map((notif) => (
+                          <div
+                            key={notif.id}
+                            onClick={() => {
+                              markNotificationsAsRead(notif.id);
+                              setShowNotifDropdown(false);
+                              navigate('/super-admin/clients');
+                            }}
+                            className={cn(
+                              "p-3.5 hover:bg-slate-50 transition-colors cursor-pointer flex items-start gap-3",
+                              notif.lu === 0 ? "bg-indigo-50/40" : ""
+                            )}
+                          >
+                            <div className={cn(
+                              "w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5",
+                              notif.lu === 0 ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"
+                            )}>
+                              <School size={16} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-xs font-bold text-slate-900 truncate">
+                                  {notif.titre}
+                                </p>
+                                {notif.lu === 0 && (
+                                  <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0"></span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-600 line-clamp-2 mt-0.5 leading-relaxed">
+                                {notif.message}
+                              </p>
+                              <div className="flex items-center justify-between mt-1.5 text-[10px] text-slate-400">
+                                <span>{new Date(notif.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</span>
+                                <span className="font-semibold text-indigo-600 flex items-center gap-0.5 hover:underline">
+                                  Gérer l'école →
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border-t border-slate-100 text-center">
+                      <Link
+                        to="/super-admin/clients"
+                        onClick={() => setShowNotifDropdown(false)}
+                        className="text-xs font-bold text-indigo-600 hover:text-indigo-800"
+                      >
+                        Gérer les établissements (Clients) →
+                      </Link>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
             <div className="h-8 w-px bg-slate-200 mx-1"></div>
             <Link to="/super-admin/profile" className="flex items-center gap-3 pl-2 group cursor-pointer">
               <div className="text-right hidden sm:block">

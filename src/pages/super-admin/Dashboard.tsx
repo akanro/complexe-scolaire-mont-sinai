@@ -27,6 +27,7 @@ import {
   Cell
 } from 'recharts';
 import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -53,17 +54,28 @@ const PLAN_DISTRIBUTION = [
 
 export default function SuperAdminDashboard() {
   const [stats, setStats] = React.useState<any>(null);
+  const [recentNotifications, setRecentNotifications] = React.useState<any[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
     const fetchStats = async () => {
       try {
-        const response = await fetch('/api/super-admin/stats', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-        });
-        if (response.ok) {
-          const data = await response.json();
+        const token = localStorage.getItem('token');
+        const [statsRes, notifRes] = await Promise.all([
+          fetch('/api/super-admin/stats', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          }),
+          fetch('/api/super-admin/notifications', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          })
+        ]);
+        if (statsRes.ok) {
+          const data = await statsRes.json();
           setStats(data);
+        }
+        if (notifRes.ok) {
+          const notifData = await notifRes.json();
+          setRecentNotifications(notifData.notifications || []);
         }
       } catch (error) {
         console.error("Error fetching stats:", error);
@@ -140,27 +152,61 @@ export default function SuperAdminDashboard() {
       </div>
       {/* Bottom Grid: Activity & Alerts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Activity */}
+        {/* Recent Activity / New School Notifications */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="font-bold text-slate-900">Activité Récente</h3>
-            <button className="text-sm font-bold text-indigo-600 hover:text-indigo-700">Voir tout</button>
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-slate-900">Activité Récente & Écoles</h3>
+              {recentNotifications.filter(n => n.lu === 0).length > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 animate-pulse">
+                  {recentNotifications.filter(n => n.lu === 0).length} nouvelle(s)
+                </span>
+              )}
+            </div>
+            <Link to="/super-admin/clients" className="text-sm font-bold text-indigo-600 hover:text-indigo-700">
+              Gérer les écoles →
+            </Link>
           </div>
           <div className="divide-y divide-slate-50">
-            <ActivityItem 
-              icon={CheckCircle2}
-              title="Ticket résolu"
-              description="Problème d'importation d'élèves résolu"
-              time="Il y a 1 heure"
-              color="bg-blue-50 text-blue-600"
-            />
-            <ActivityItem 
-              icon={Clock}
-              title="Nouvel essai"
-              description="Complexe Scolaire La Lumière"
-              time="Il y a 2 heures"
-              color="bg-amber-50 text-amber-600"
-            />
+            {recentNotifications.length > 0 ? (
+              recentNotifications.slice(0, 5).map((notif) => (
+                <Link
+                  key={notif.id}
+                  to="/super-admin/clients"
+                  className="p-4 flex items-start gap-4 hover:bg-slate-50 transition-colors group block"
+                >
+                  <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-600 group-hover:scale-105 transition-transform shrink-0">
+                    <School size={18} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-bold text-slate-900 truncate">{notif.titre}</p>
+                      <span className="text-[10px] text-slate-400 font-medium">
+                        {new Date(notif.created_at).toLocaleDateString('fr-FR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">{notif.message}</p>
+                  </div>
+                </Link>
+              ))
+            ) : (
+              <>
+                <ActivityItem 
+                  icon={CheckCircle2}
+                  title="Système SaaS Initialisé"
+                  description="Plateforme prête pour l'accueil de nouveaux établissements"
+                  time="Récemment"
+                  color="bg-emerald-50 text-emerald-600"
+                />
+                <ActivityItem 
+                  icon={School}
+                  title="Gestion des Écoles Active"
+                  description="Ajout manuel et notifications automatiques opérationnels"
+                  time="En cours"
+                  color="bg-indigo-50 text-indigo-600"
+                />
+              </>
+            )}
           </div>
         </div>
 

@@ -1061,6 +1061,23 @@ async function initializeDatabase() {
   try { db.prepare("ALTER TABLE subscription_licenses ADD COLUMN modality_name TEXT").run(); } catch(e){}
   try { db.prepare("ALTER TABLE subscription_licenses ADD COLUMN billing_cycle TEXT DEFAULT 'annuel'").run(); } catch(e){}
 
+  try {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS super_admin_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      titre TEXT NOT NULL,
+      message TEXT NOT NULL,
+      type TEXT DEFAULT 'new_school',
+      school_id INTEGER,
+      school_name TEXT,
+      school_code TEXT,
+      admin_email TEXT,
+      lu INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    `);
+  } catch (e) {}
+
   // Seed default super admin settings if not present
   const seedSettings = [
     { key: 'app_name', value: 'MégafixaEduc Pro' },
@@ -20585,6 +20602,14 @@ function executeYearTransition(
           VALUES (?, ?, 'en_attente_activation', ?, ?)
         `).run(tx.school_name, tx.plan_name, expiryDate, licenseKey);
         schoolId = schoolInsert.lastInsertRowid;
+        try {
+          notifySuperAdminNewSchool({
+            id: Number(schoolId),
+            nom: tx.school_name,
+            email: tx.email,
+            plan_abonnement: tx.plan_name
+          });
+        } catch(e) {}
       }
 
       // Provision admin user if not already exists
@@ -26513,14 +26538,73 @@ Tu disposes d'une maîtrise absolue de TOUTES les fonctionnalités, calculs, flu
     }
   });
 
-  // Schools Management
+  // Helper for Super Admin Real-Time Notifications
+  function notifySuperAdminNewSchool(school: { id: number; nom: string; code_ecole?: string | null; email?: string | null; plan_abonnement?: string | null }) {
+    try {
+      const titre = `Nouvelle école : ${school.nom}`;
+      const message = `L'établissement ${school.nom} (Code: ${school.code_ecole || 'N/A'}) a été enregistré avec la formule ${school.plan_abonnement || 'Standard'}.`;
+      db.prepare(`
+        INSERT INTO super_admin_notifications (titre, message, type, school_id, school_name, school_code, admin_email, lu)
+        VALUES (?, ?, 'new_school', ?, ?, ?, ?, 0)
+      `).run(titre, message, school.id, school.nom, school.code_ecole || null, school.email || null);
+      console.log(`[SuperAdmin Notification] Nouvelle école enregistrée : ${school.nom}`);
+    } catch (err) {
+      console.error("Erreur lors de la création de la notification Super Admin :", err);
+    }
+  }
+
+  // Super Admin Notifications API
+  app.get("/api/super-admin/notifications", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const notifications = db.prepare(`
+        SELECT * FROM super_admin_notifications 
+        ORDER BY created_at DESC LIMIT 50
+      `).all();
+      const unreadCount = (db.prepare(`
+        SELECT COUNT(*) as count FROM super_admin_notifications WHERE lu = 0
+      `).get() as any)?.count || 0;
+      res.json({ notifications, unreadCount });
+    } catch (err) {
+      res.status(500).json({ error: "Erreur lors de la récupération des notifications." });
+    }
+  });
+
+  app.post("/api/super-admin/notifications/mark-read", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const { id, all } = req.body || {};
+      if (id) {
+        db.prepare("UPDATE super_admin_notifications SET lu = 1 WHERE id = ?").run(id);
+      } else {
+        db.prepare("UPDATE super_admin_notifications SET lu = 1").run();
+      }
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Erreur lors de la mise à jour des notifications." });
+    }
+  });
+
+  app.delete("/api/super-admin/notifications/:id", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      db.prepare("DELETE FROM super_admin_notifications WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Erreur lors de la suppression de la notification." });
+    }
+  });
+
+  // Schools Management (Comprehensive with detailed view, editing, deletion and default password generation)
   app.get("/api/super-admin/schools", authenticateToken, requireSuperAdmin, (req, res) => {
     try {
       const schools = db.prepare(`
         SELECT s.*, 
         (SELECT COUNT(*) FROM utilisateurs WHERE school_id = s.id) as user_count,
-        (SELECT COUNT(*) FROM eleves WHERE school_id = s.id) as student_count
+        (SELECT COUNT(*) FROM eleves WHERE school_id = s.id) as student_count,
+        (SELECT COUNT(*) FROM classes WHERE school_id = s.id) as class_count,
+        (SELECT COUNT(*) FROM enseignants WHERE school_id = s.id) as teacher_count,
+        (SELECT email FROM utilisateurs WHERE school_id = s.id AND role = 'admin' LIMIT 1) as admin_email,
+        (SELECT nom FROM utilisateurs WHERE school_id = s.id AND role = 'admin' LIMIT 1) as admin_nom
         FROM school_info s
+        ORDER BY s.created_at DESC
       `).all();
       res.json(schools);
     } catch (err) {
@@ -26528,14 +26612,344 @@ Tu disposes d'une maîtrise absolue de TOUTES les fonctionnalités, calculs, flu
     }
   });
 
+  // Detailed view of a school WITHOUT sensitive/confidential data (Strict Privacy Barrier)
+  app.get("/api/super-admin/schools/:id/details", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const schoolId = req.params.id;
+      const school = db.prepare("SELECT * FROM school_info WHERE id = ?").get(schoolId) as any;
+      if (!school) {
+        return res.status(404).json({ error: "Établissement introuvable." });
+      }
+
+      // Administrative accounts summary (without passwords or private tokens)
+      const adminUsers = db.prepare(`
+        SELECT id, nom, email, role, last_seen, created_at, approuve
+        FROM utilisateurs 
+        WHERE school_id = ? AND (role = 'admin' OR role = 'fonde' OR role = 'direction')
+      `).all(schoolId);
+
+      // Aggregated metric counts ONLY (No individual grades, confidential records or family finances)
+      const studentCount = (db.prepare("SELECT COUNT(*) as count FROM eleves WHERE school_id = ?").get(schoolId) as any)?.count || 0;
+      const teacherCount = (db.prepare("SELECT COUNT(*) as count FROM enseignants WHERE school_id = ?").get(schoolId) as any)?.count || 0;
+      const classCount = (db.prepare("SELECT COUNT(*) as count FROM classes WHERE school_id = ?").get(schoolId) as any)?.count || 0;
+      const userCount = (db.prepare("SELECT COUNT(*) as count FROM utilisateurs WHERE school_id = ?").get(schoolId) as any)?.count || 0;
+
+      // License status
+      const licenseInfo = db.prepare(`
+        SELECT license_key, plan_name, duration_days, status, expires_at, created_at
+        FROM subscription_licenses 
+        WHERE school_id = ? OR LOWER(TRIM(school_name)) = LOWER(TRIM(?))
+        ORDER BY created_at DESC LIMIT 1
+      `).get(schoolId, school.nom);
+
+      res.json({
+        school,
+        admins: adminUsers,
+        metrics: {
+          studentCount,
+          teacherCount,
+          classCount,
+          userCount
+        },
+        license: licenseInfo || null,
+        confidentialityNotice: "🔒 Cloisonnement de Confidentialité Garanti (RGPD / Confidentialité Éducative) : Les données pédagogiques (notes, bulletins), personnelles des familles et relevés financiers internes restent strictement chiffrées et isolées pour la direction de l'établissement."
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: "Erreur lors du chargement des détails : " + (err.message || err) });
+    }
+  });
+
+  // Create school manually + default password generation
   app.post("/api/super-admin/schools", authenticateToken, requireSuperAdmin, (req, res) => {
     try {
-      const { nom, code_ecole, email, plan_abonnement } = req.body;
-      const info = db.prepare("INSERT INTO school_info (nom, code_ecole, email, plan_abonnement, statut_abonnement) VALUES (?, ?, ?, ?, ?)")
-        .run(nom, code_ecole || null, email || null, plan_abonnement || 'Standard', 'actif');
-      res.json({ success: true, id: info.lastInsertRowid });
-    } catch (err) {
-      res.status(500).json({ error: "Erreur lors de la création de l'école." });
+      const { 
+        nom, 
+        code_ecole, 
+        admin_nom, 
+        email, 
+        telephone, 
+        adresse, 
+        ville, 
+        pays, 
+        devise, 
+        plan_abonnement, 
+        duree_mois 
+      } = req.body;
+
+      if (!nom || !nom.trim()) {
+        return res.status(400).json({ error: "Le nom de l'établissement est obligatoire." });
+      }
+
+      const cleanEmail = email ? email.trim().toLowerCase() : null;
+      if (!cleanEmail) {
+        return res.status(400).json({ error: "L'adresse email de contact/administrateur est obligatoire." });
+      }
+
+      // Check if email already used by another user
+      const existingUser = db.prepare("SELECT id, school_id FROM utilisateurs WHERE LOWER(TRIM(email)) = ?").get(cleanEmail) as any;
+      if (existingUser) {
+        return res.status(400).json({ 
+          error: `Cette adresse email (${cleanEmail}) est déjà associée à un utilisateur existant (Compte école ID: ${existingUser.school_id || 'N/A'}). Veuillez en utiliser une autre.` 
+        });
+      }
+
+      // Generate unique school code if missing
+      const cleanCode = (code_ecole && code_ecole.trim()) 
+        ? code_ecole.trim().toUpperCase() 
+        : `MF-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+
+      // Generate secure default password meeting strict policies (e.g. Edu2026!7b9x)
+      const randomSuffix = Math.random().toString(36).substring(2, 6).toLowerCase();
+      const defaultPassword = `Edu2026!${randomSuffix}`;
+      const passwordHash = bcrypt.hashSync(defaultPassword, 8);
+
+      // Generate subscription key
+      const plan = plan_abonnement || 'Standard';
+      let subscriptionKey = '';
+      try {
+        subscriptionKey = generateSubscriptionKey(plan);
+      } catch (e) {
+        subscriptionKey = `MF-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+      }
+
+      // Duration & Expiry
+      const months = parseInt(duree_mois, 10) || 12;
+      const expiryDate = new Date(Date.now() + months * 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      let newSchoolId = 0;
+
+      const createSchoolTx = db.transaction(() => {
+        const info = db.prepare(`
+          INSERT INTO school_info (
+            nom, code_ecole, email, telephone, adresse, pays, devise, 
+            plan_abonnement, statut_abonnement, date_fin_abonnement, subscription_key
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'actif', ?, ?)
+        `).run(
+          nom.trim(), 
+          cleanCode, 
+          cleanEmail, 
+          telephone || null, 
+          adresse || (ville ? `${ville}` : null), 
+          pays || 'Bénin', 
+          devise || 'FCFA', 
+          plan, 
+          expiryDate, 
+          subscriptionKey
+        );
+
+        newSchoolId = Number(info.lastInsertRowid);
+
+        // Create the school's primary admin user
+        db.prepare(`
+          INSERT INTO utilisateurs (
+            nom, email, mot_de_passe, mot_de_passe_initial, role, approuve, is_first_login, can_write, school_id
+          ) VALUES (?, ?, ?, ?, 'admin', 1, 0, 1, ?)
+        `).run(
+          admin_nom?.trim() || `Direction ${nom.trim()}`,
+          cleanEmail,
+          passwordHash,
+          defaultPassword,
+          newSchoolId
+        );
+
+        // Create subscription license record for traceability
+        try {
+          db.prepare(`
+            INSERT INTO subscription_licenses (
+              license_key, plan_name, plan_code, school_name, school_id, client_email, client_name, client_phone, duration_days, status, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+          `).run(
+            subscriptionKey,
+            plan,
+            plan.toLowerCase(),
+            nom.trim(),
+            newSchoolId,
+            cleanEmail,
+            admin_nom || nom.trim(),
+            telephone || null,
+            months * 30,
+            expiryDate
+          );
+        } catch (e) {}
+
+        // Record SaaS audit log
+        try {
+          recordSaasLog((req as any).user?.id || null, 'CREATE_SCHOOL', {
+            school_id: newSchoolId,
+            school_name: nom.trim(),
+            code_ecole: cleanCode,
+            admin_email: cleanEmail,
+            plan
+          }, req);
+        } catch (e) {}
+      });
+
+      createSchoolTx();
+
+      // Trigger Super Admin notification
+      notifySuperAdminNewSchool({
+        id: newSchoolId,
+        nom: nom.trim(),
+        code_ecole: cleanCode,
+        email: cleanEmail,
+        plan_abonnement: plan
+      });
+
+      res.json({
+        success: true,
+        school: {
+          id: newSchoolId,
+          nom: nom.trim(),
+          code_ecole: cleanCode,
+          email: cleanEmail,
+          plan_abonnement: plan,
+          date_fin_abonnement: expiryDate,
+          subscription_key: subscriptionKey
+        },
+        credentials: {
+          email: cleanEmail,
+          defaultPassword,
+          schoolCode: cleanCode,
+          subscriptionKey
+        },
+        message: "Établissement et compte administrateur créés avec succès."
+      });
+    } catch (err: any) {
+      console.error("Erreur création école:", err);
+      res.status(500).json({ error: "Erreur lors de la création de l'école : " + (err.message || err) });
+    }
+  });
+
+  // Update school info
+  app.put("/api/super-admin/schools/:id", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const schoolId = req.params.id;
+      const { 
+        nom, 
+        code_ecole, 
+        email, 
+        telephone, 
+        adresse, 
+        pays, 
+        devise, 
+        plan_abonnement, 
+        statut_abonnement, 
+        date_fin_abonnement 
+      } = req.body;
+
+      if (!nom || !nom.trim()) {
+        return res.status(400).json({ error: "Le nom est obligatoire." });
+      }
+
+      db.prepare(`
+        UPDATE school_info SET
+          nom = ?,
+          code_ecole = ?,
+          email = ?,
+          telephone = ?,
+          adresse = ?,
+          pays = ?,
+          devise = ?,
+          plan_abonnement = ?,
+          statut_abonnement = ?,
+          date_fin_abonnement = ?
+        WHERE id = ?
+      `).run(
+        nom.trim(),
+        code_ecole || null,
+        email || null,
+        telephone || null,
+        adresse || null,
+        pays || 'Bénin',
+        devise || 'FCFA',
+        plan_abonnement || 'Standard',
+        statut_abonnement || 'actif',
+        date_fin_abonnement || null,
+        schoolId
+      );
+
+      try {
+        recordSaasLog((req as any).user?.id || null, 'UPDATE_SCHOOL', { school_id: schoolId, nom }, req);
+      } catch (e) {}
+
+      res.json({ success: true, message: "Établissement mis à jour avec succès." });
+    } catch (err: any) {
+      res.status(500).json({ error: "Erreur lors de la mise à jour : " + (err.message || err) });
+    }
+  });
+
+  // Reset admin default password for a school
+  app.post("/api/super-admin/schools/:id/reset-password", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const schoolId = req.params.id;
+      const admin = db.prepare(`
+        SELECT id, nom, email FROM utilisateurs 
+        WHERE school_id = ? AND role = 'admin' 
+        ORDER BY id ASC LIMIT 1
+      `).get(schoolId) as any;
+
+      if (!admin) {
+        return res.status(404).json({ error: "Aucun compte administrateur trouvé pour cet établissement." });
+      }
+
+      const randomSuffix = Math.random().toString(36).substring(2, 6).toLowerCase();
+      const newDefaultPassword = `Edu2026!${randomSuffix}`;
+      const passwordHash = bcrypt.hashSync(newDefaultPassword, 8);
+
+      db.prepare(`
+        UPDATE utilisateurs 
+        SET mot_de_passe = ?, mot_de_passe_initial = ?, is_first_login = 0 
+        WHERE id = ?
+      `).run(passwordHash, newDefaultPassword, admin.id);
+
+      try {
+        recordSaasLog((req as any).user?.id || null, 'RESET_SCHOOL_ADMIN_PASSWORD', {
+          school_id: schoolId,
+          admin_email: admin.email
+        }, req);
+      } catch (e) {}
+
+      res.json({
+        success: true,
+        newDefaultPassword,
+        adminEmail: admin.email,
+        adminNom: admin.nom,
+        message: "Nouveau mot de passe par défaut généré avec succès."
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: "Erreur lors de la réinitialisation du mot de passe : " + (err.message || err) });
+    }
+  });
+
+  // Delete a school
+  app.delete("/api/super-admin/schools/:id", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const schoolId = req.params.id;
+      const school = db.prepare("SELECT nom FROM school_info WHERE id = ?").get(schoolId) as any;
+      if (!school) {
+        return res.status(404).json({ error: "Établissement introuvable." });
+      }
+
+      const deleteTx = db.transaction(() => {
+        try { db.prepare("DELETE FROM utilisateurs WHERE school_id = ?").run(schoolId); } catch(e){}
+        try { db.prepare("DELETE FROM eleves WHERE school_id = ?").run(schoolId); } catch(e){}
+        try { db.prepare("DELETE FROM enseignants WHERE school_id = ?").run(schoolId); } catch(e){}
+        try { db.prepare("DELETE FROM classes WHERE school_id = ?").run(schoolId); } catch(e){}
+        try { db.prepare("DELETE FROM notifications WHERE school_id = ?").run(schoolId); } catch(e){}
+        try { db.prepare("DELETE FROM super_admin_notifications WHERE school_id = ?").run(schoolId); } catch(e){}
+        try { db.prepare("DELETE FROM school_feature_locks WHERE school_id = ?").run(schoolId); } catch(e){}
+        db.prepare("DELETE FROM school_info WHERE id = ?").run(schoolId);
+      });
+
+      deleteTx();
+
+      try {
+        recordSaasLog((req as any).user?.id || null, 'DELETE_SCHOOL', { school_id: schoolId, school_name: school.nom }, req);
+      } catch (e) {}
+
+      res.json({ success: true, message: `L'établissement ${school.nom} a été supprimé avec succès.` });
+    } catch (err: any) {
+      res.status(500).json({ error: "Erreur lors de la suppression de l'établissement : " + (err.message || err) });
     }
   });
 
