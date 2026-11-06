@@ -66,6 +66,7 @@ const MENU_ITEMS: MenuItem[] = [
     submenu: [
       { title: 'Tous les utilisateurs', path: '/super-admin/users' },
       { title: 'Clients (Écoles)', path: '/super-admin/clients' },
+      { title: 'Demandes d\'adhésion', path: '/super-admin/clients?tab=requests' },
       { title: 'Administrateurs', path: '/super-admin/admins' },
       { title: 'Utilisateurs actifs', path: '/super-admin/users/active' },
       { title: 'Utilisateurs inactifs', path: '/super-admin/users/inactive' },
@@ -467,7 +468,11 @@ export default function SuperAdminLayout({ children }: { children: React.ReactNo
                             onClick={() => {
                               markNotificationsAsRead(notif.id);
                               setShowNotifDropdown(false);
-                              navigate('/super-admin/clients');
+                              if (notif.type === 'school_request' || notif.type === 'school_request_payment') {
+                                navigate('/super-admin/clients?tab=requests');
+                              } else {
+                                navigate('/super-admin/clients');
+                              }
                             }}
                             className={cn(
                               "p-3.5 hover:bg-slate-50 transition-colors cursor-pointer flex items-start gap-3",

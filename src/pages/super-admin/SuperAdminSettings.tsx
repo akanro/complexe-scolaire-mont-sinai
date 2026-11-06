@@ -469,6 +469,57 @@ export default function SuperAdminSettings() {
                   </div>
                 </div>
               </section>
+
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-slate-900 uppercase tracking-widest">Contacts Support & Demandes Écoles</h3>
+                  <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full">
+                    Affichés sur l'écran d'attente client (24H)
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500">Email d'assistance officiel</label>
+                    <input 
+                      type="email" 
+                      value={settings.support_email || 'contact@megafixa.com'} 
+                      onChange={(e) => handleChange('support_email', e.target.value)}
+                      placeholder="contact@megafixa.com"
+                      className="w-full px-4 py-2.5 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 font-medium" 
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500">Numéro Téléphone d'assistance</label>
+                    <input 
+                      type="text" 
+                      value={settings.support_phone || '(+229) 0161107918'} 
+                      onChange={(e) => handleChange('support_phone', e.target.value)}
+                      placeholder="(+229) 0161107918"
+                      className="w-full px-4 py-2.5 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 font-medium" 
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500">Numéro WhatsApp direct (avec indicatif pays)</label>
+                    <input 
+                      type="text" 
+                      value={settings.support_whatsapp || '+2290161107918'} 
+                      onChange={(e) => handleChange('support_whatsapp', e.target.value)}
+                      placeholder="+2290161107918"
+                      className="w-full px-4 py-2.5 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 font-medium" 
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500">Délai maximal de validation promis</label>
+                    <input 
+                      type="text" 
+                      value={settings.support_delai_validation || '24H'} 
+                      onChange={(e) => handleChange('support_delai_validation', e.target.value)}
+                      placeholder="24H"
+                      className="w-full px-4 py-2.5 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 font-medium" 
+                    />
+                  </div>
+                </div>
+              </section>
             </div>
           )}
 

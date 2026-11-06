@@ -97,6 +97,7 @@ const TeacherCourses = lazyWithRetry(() => import('./pages/TeacherCourses'));
 const AdminActiveSessions = lazyWithRetry(() => import('./pages/AdminActiveSessions'));
 const LandingPage = lazyWithRetry(() => import('./pages/LandingPage'));
 const Signup = lazyWithRetry(() => import('./pages/Signup'));
+const SchoolCreationRequestPage = lazyWithRetry(() => import('./pages/SchoolCreationRequestPage'));
 const SubscriptionPayment = lazyWithRetry(() => import('./pages/SubscriptionPayment'));
 const SetupPassword = lazyWithRetry(() => import('./pages/SetupPassword'));
 const DocumentVerification = lazyWithRetry(() => import('./pages/DocumentVerification'));
@@ -193,6 +194,9 @@ export default function App() {
                 <Route path="/login" element={<Login />} />
                 <Route path="/parent-login" element={<Login />} />
                 <Route path="/signup" element={<Signup />} />
+                <Route path="/demande-compte-ecole" element={<SchoolCreationRequestPage />} />
+                <Route path="/demande-ecole" element={<SchoolCreationRequestPage />} />
+                <Route path="/school-request" element={<SchoolCreationRequestPage />} />
                 <Route path="/paiement-abonnement" element={<SubscriptionPayment />} />
                 <Route path="/paiement" element={<SubscriptionPayment />} />
                 <Route path="/subscription-payment" element={<SubscriptionPayment />} />

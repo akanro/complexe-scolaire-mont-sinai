@@ -29,6 +29,7 @@ import { twMerge } from 'tailwind-merge';
 import toast from 'react-hot-toast';
 import PasswordStrengthMeter, { evaluatePassword } from '../components/PasswordStrengthMeter';
 import { SUBSCRIPTION_PLANS, SubscriptionPlan } from '../utils/subscriptions';
+import SchoolCreationRequestModal from '../components/SchoolCreationRequestModal';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -38,6 +39,7 @@ export default function Signup() {
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();
+  const [showRequestModal, setShowRequestModal] = useState(false);
 
   // Step 1: Admin & School info
   const [nom, setNom] = useState('');
@@ -183,11 +185,24 @@ export default function Signup() {
         <div className="bg-slate-900/80 backdrop-blur-2xl py-8 px-5 sm:px-10 shadow-2xl border border-slate-800 rounded-[2.5rem]">
           
           {/* Alerte Indisponibilité Momentanée */}
-          <div className="mb-6 p-4 rounded-2xl bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium flex items-start gap-3">
+          <div className="mb-6 p-5 rounded-3xl bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium flex items-start gap-3.5 shadow-lg">
             <AlertCircle className="w-5 h-5 flex-shrink-0 text-amber-400 mt-0.5" />
-            <div className="flex-1 space-y-1">
+            <div className="flex-1 space-y-2">
               <p className="font-bold text-white text-sm">momentanément indisponible</p>
-              <p>Les créations de compte sont temporairement suspendues pour maintenance administrative. Veuillez contacter l'administration pour toute demande d'accès ou vous connecter avec un compte existant.</p>
+              <p className="text-amber-200/90 leading-relaxed">
+                Les créations de compte directes sont temporairement suspendues. Pour ouvrir un compte officiel pour votre établissement, vous pouvez adresser directement une demande de création au Super Admin avec règlement Mobile Money (activation garantie sous 24H au plus).
+              </p>
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowRequestModal(true)}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs rounded-xl shadow-md shadow-emerald-950/40 transition-all cursor-pointer border border-emerald-400/30"
+                >
+                  <GraduationCap size={16} />
+                  <span>Demande de création de compte école (Traitement 24H)</span>
+                  <ArrowRight size={14} />
+                </button>
+              </div>
             </div>
           </div>
           {/* Notice when arriving with unlinked email */}
@@ -528,6 +543,14 @@ export default function Signup() {
           )}
         </div>
       </div>
+
+      <SchoolCreationRequestModal
+        isOpen={showRequestModal}
+        onClose={() => setShowRequestModal(false)}
+        defaultEmail={email}
+        defaultNom={nom}
+        defaultPlan={selectedPlan.toUpperCase()}
+      />
     </div>
   );
 }

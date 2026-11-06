@@ -30,6 +30,7 @@ import PasswordStrengthMeter, { evaluatePassword } from '../components/PasswordS
 import { LanguageSelector } from '../components/LanguageSelector';
 import { useTranslation } from '../contexts/TranslationContext';
 import { auth, googleProvider, signInWithPopup } from '../lib/firebase';
+import SchoolCreationRequestModal from '../components/SchoolCreationRequestModal';
 
 export default function Login() {
   const { t } = useTranslation();
@@ -46,6 +47,9 @@ export default function Login() {
   const [successInfo, setSuccessInfo] = useState<string | null>(null);
   const [requiresOtp, setRequiresOtp] = useState(false);
   const [otpNotice, setOtpNotice] = useState<string | null>(null);
+
+  // School creation request modal
+  const [showSchoolRequestModal, setShowSchoolRequestModal] = useState(false);
 
   // License Key Activation State
   const [showActivateKeyModal, setShowActivateKeyModal] = useState(false);
@@ -874,27 +878,51 @@ export default function Login() {
                     setActivatedPlanResult(null);
                     setShowActivateKeyModal(true);
                   }}
-                  className="w-full py-2.5 px-4 bg-slate-900/90 hover:bg-slate-900 border border-amber-500/40 hover:border-amber-400 text-amber-400 hover:text-amber-300 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm"
+                  className="w-full py-2.5 px-4 bg-slate-900/90 hover:bg-slate-900 border border-amber-500/40 hover:border-amber-400 text-amber-400 hover:text-amber-300 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer"
                 >
                   <KeyRound size={15} />
                   <span>Activer une Clé d'Abonnement (Premier Accès)</span>
                 </button>
               </div>
+
+              {/* Bouton officiel : Demande de création de compte école */}
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowSchoolRequestModal(true)}
+                  className="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-sm rounded-xl transition-all shadow-lg shadow-emerald-900/30 flex items-center justify-center gap-2.5 cursor-pointer border border-emerald-400/40 group"
+                >
+                  <School className="w-5 h-5 text-emerald-200 group-hover:scale-110 transition-transform" />
+                  <span>Demande de création de compte école</span>
+                  <ArrowRight className="w-4 h-4 text-emerald-200 group-hover:translate-x-1 transition-transform" />
+                </button>
+              </div>
             </form>
           )}
 
-          {/* Signup Link */}
-          <div className="mt-6 text-center pt-4 border-t border-slate-700/40">
+          {/* Signup & School Request Links */}
+          <div className="mt-6 text-center pt-4 border-t border-slate-700/40 space-y-2">
             <p className="text-xs text-slate-400">
               Vous représentez un nouvel établissement ?{' '}
-              <Link to="/signup" className="font-extrabold text-emerald-400 hover:text-emerald-300 transition-colors">
-                Créer un compte école
-              </Link>
+              <button
+                type="button"
+                onClick={() => setShowSchoolRequestModal(true)}
+                className="font-black text-emerald-400 hover:text-emerald-300 transition-colors underline cursor-pointer"
+              >
+                Faire une demande de création de compte
+              </button>
             </p>
           </div>
 
         </div>
       </div>
+
+      {/* School Creation Request Modal */}
+      <SchoolCreationRequestModal
+        isOpen={showSchoolRequestModal}
+        onClose={() => setShowSchoolRequestModal(false)}
+        defaultEmail={email}
+      />
 
       {/* Subscription Key Activation Modal (First Access) */}
       {showActivateKeyModal && (

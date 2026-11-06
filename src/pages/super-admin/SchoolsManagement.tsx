@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { 
   Search, 
   Filter, 
@@ -31,12 +32,19 @@ import {
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import toast from 'react-hot-toast';
+import SchoolRequestsManagement from '../../components/super-admin/SchoolRequestsManagement';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
 export default function SchoolsManagement() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [mainTab, setMainTab] = useState<'schools' | 'requests'>(
+    searchParams.get('tab') === 'requests' ? 'requests' : 'schools'
+  );
+  const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
+
   const [schools, setSchools] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -122,7 +130,29 @@ export default function SchoolsManagement() {
 
   useEffect(() => {
     fetchData();
+
+    // Fetch pending school requests count
+    const token = localStorage.getItem('token');
+    fetch('/api/super-admin/school-requests', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.stats) {
+          setPendingRequestsCount(Number(data.stats.payment_confirmed || 0) + Number(data.stats.pending || 0));
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam === 'requests') {
+      setMainTab('requests');
+    } else {
+      setMainTab('schools');
+    }
+  }, [searchParams]);
 
   const handleCopyText = (text: string, fieldId: string) => {
     navigator.clipboard.writeText(text);
@@ -375,14 +405,60 @@ export default function SchoolsManagement() {
         </button>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
-            <School size={22} />
-          </div>
-          <div>
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Écoles</p>
+      {/* Main Navigation Tabs */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+        <button
+          type="button"
+          onClick={() => {
+            setMainTab('schools');
+            setSearchParams({});
+          }}
+          className={cn(
+            "flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer",
+            mainTab === 'schools'
+              ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/25"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+          )}
+        >
+          <School size={16} />
+          <span>Établissements Actifs ({schools.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setMainTab('requests');
+            setSearchParams({ tab: 'requests' });
+          }}
+          className={cn(
+            "flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer relative",
+            mainTab === 'requests'
+              ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/25"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+          )}
+        >
+          <CreditCard size={16} />
+          <span>Demandes de création d'école</span>
+          {pendingRequestsCount > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500 text-white animate-pulse">
+              {pendingRequestsCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {mainTab === 'requests' ? (
+        <SchoolRequestsManagement onSchoolApproved={fetchData} />
+      ) : (
+        <>
+          {/* KPI Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                <School size={22} />
+              </div>
+              <div>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Écoles</p>
             <p className="text-xl font-black text-slate-900 leading-tight mt-0.5">{totalSchools}</p>
           </div>
         </div>
@@ -643,6 +719,8 @@ export default function SchoolsManagement() {
           </table>
         </div>
       </div>
+        </>
+      )}
 
       {/* ========================================================================= */}
       {/* MODAL 1: ADD SCHOOL MANUALLY + DEFAULT PASSWORD GENERATION               */}

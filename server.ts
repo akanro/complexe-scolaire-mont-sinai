@@ -1075,6 +1075,35 @@ async function initializeDatabase() {
       lu INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS school_creation_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reference TEXT UNIQUE NOT NULL,
+      nom_ecole TEXT NOT NULL,
+      type_etablissement TEXT,
+      pays TEXT DEFAULT 'Bénin',
+      ville TEXT,
+      adresse TEXT,
+      telephone_ecole TEXT,
+      email_ecole TEXT,
+      plan_souhaite TEXT DEFAULT 'PRO',
+      montant_estime REAL DEFAULT 0,
+      demandeur_nom TEXT NOT NULL,
+      demandeur_fonction TEXT,
+      demandeur_email TEXT NOT NULL,
+      demandeur_telephone TEXT NOT NULL,
+      demandeur_whatsapp TEXT,
+      notes TEXT,
+      payment_method TEXT,
+      payment_phone TEXT,
+      payment_reference TEXT,
+      statut TEXT DEFAULT 'pending' CHECK(statut IN ('pending', 'payment_pending', 'payment_confirmed', 'approved', 'rejected')),
+      school_id INTEGER,
+      motif_rejet TEXT,
+      admin_notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     `);
   } catch (e) {}
 
@@ -1089,7 +1118,11 @@ async function initializeDatabase() {
     { key: 'mm_phone', value: '+228 90 00 00 00' },
     { key: 'mm_name', value: 'MEGAPFIXA SARL' },
     { key: 'mm_instructions', value: 'Veuillez effectuer le transfert sur le numéro ci-dessous et envoyer la preuve par WhatsApp.' },
-    { key: 'default_country', value: 'Togo' },
+    { key: 'default_country', value: 'Bénin' },
+    { key: 'support_email', value: 'contact@megafixa.com' },
+    { key: 'support_phone', value: '(+229) 0161107918' },
+    { key: 'support_whatsapp', value: '+2290161107918' },
+    { key: 'support_delai_validation', value: '24H' },
     { key: 'smtp_host', value: 'smtp.gmail.com' },
     { key: 'smtp_port', value: '465' },
     { key: 'smtp_secure', value: 'true' },
@@ -26980,6 +27013,559 @@ Tu disposes d'une maîtrise absolue de TOUTES les fonctionnalités, calculs, flu
       try { db.pragma('foreign_keys = ON'); } catch (e) {}
       console.error("Erreur suppression école:", err);
       res.status(500).json({ error: "Erreur lors de la suppression de l'établissement : " + (err.message || err) });
+    }
+  });
+
+  // ==========================================
+  // DEMANDES DE CRÉATION DE COMPTE ÉCOLE (SaaS)
+  // ==========================================
+
+  // Configuration publique pour le formulaire de demande et paiement
+  app.get("/api/public/school-requests/config", (req, res) => {
+    try {
+      const configRows = db.prepare("SELECT * FROM super_admin_settings").all() as any[];
+      const configMap: any = {};
+      configRows.forEach((c: any) => configMap[c.key] = c.value);
+
+      let paymentMethods: any[] = [];
+      try {
+        if (configMap.payment_methods) {
+          const parsed = typeof configMap.payment_methods === 'string' ? JSON.parse(configMap.payment_methods) : configMap.payment_methods;
+          paymentMethods = Array.isArray(parsed) ? parsed.filter((m: any) => m.active !== false) : [];
+        }
+      } catch (e) {
+        paymentMethods = [];
+      }
+
+      if (paymentMethods.length === 0) {
+        paymentMethods = [
+          {
+            id: 'pay_mtn_bj',
+            name: 'MTN Mobile Money Bénin',
+            type: 'mobile_money',
+            provider: 'MTN',
+            number: '(+229) 0161107918',
+            owner: 'Mégafixa Technologies',
+            url: '',
+            ussd: '*880*41*0161107918*MONTANT#',
+            instructions: 'Validation instantanée par notification USSD ou transfert direct sur le numéro marchand.',
+            active: true
+          },
+          {
+            id: 'pay_moov_bj',
+            name: 'Moov Money Bénin',
+            type: 'mobile_money',
+            provider: 'Moov',
+            number: '(+229) 95000000',
+            owner: 'Mégafixa Technologies',
+            url: '',
+            ussd: '*155*1*1*95000000*MONTANT#',
+            instructions: 'Effectuez le transfert vers notre compte marchand Moov Money.',
+            active: true
+          },
+          {
+            id: 'pay_celtiis_bj',
+            name: 'Celtiis Cash Bénin',
+            type: 'mobile_money',
+            provider: 'Celtiis',
+            number: '(+229) 40000000',
+            owner: 'Mégafixa Technologies',
+            url: '',
+            ussd: '*889#',
+            instructions: 'Effectuez le paiement via le menu Celtiis Cash (*889#).',
+            active: true
+          },
+          {
+            id: 'pay_fedapay',
+            name: 'Passerelle FedaPay (Mobile Money & Carte)',
+            type: 'online',
+            provider: 'FedaPay',
+            number: 'Paiement Sécurisé FedaPay',
+            owner: 'Mégafixa Technologies',
+            url: 'https://checkout.fedapay.com/pay/anscolar-smart',
+            ussd: '',
+            instructions: 'Paiement en ligne sécurisé par Mobile Money (MTN/Moov/Orange/Wave) ou Carte Bancaire.',
+            active: true
+          }
+        ];
+      }
+
+      let planPaymentLinks: any = {};
+      try {
+        if (configMap.plan_payment_links) {
+          planPaymentLinks = typeof configMap.plan_payment_links === 'string' ? JSON.parse(configMap.plan_payment_links) : configMap.plan_payment_links;
+        }
+      } catch (e) {}
+
+      // Get plans
+      let plans = [];
+      try {
+        plans = db.prepare("SELECT * FROM plans WHERE active = 1 ORDER BY price ASC").all();
+      } catch (e) {
+        plans = [
+          { id: 'DECOUVERTE', name: 'Découverte', price: 0, student_limit: 100, staff_limit: 10 },
+          { id: 'PRO', name: 'Formule Pro', price: 150000, student_limit: 500, staff_limit: 30 },
+          { id: 'EXCELLENCE', name: 'Excellence Illimitée', price: 350000, student_limit: 2000, staff_limit: 100 }
+        ];
+      }
+
+      res.json({
+        app_name: configMap.app_name || 'MégafixaEduc Pro',
+        currency: configMap.default_currency || 'FCFA',
+        payment_methods: paymentMethods,
+        plan_payment_links: planPaymentLinks,
+        plans,
+        support_contacts: {
+          email: configMap.support_email || 'contact@megafixa.com',
+          phone: configMap.support_phone || '(+229) 0161107918',
+          whatsapp: configMap.support_whatsapp || '+2290161107918',
+          delai_max: configMap.support_delai_validation || '24H'
+        }
+      });
+    } catch (err: any) {
+      console.error("Erreur public config school requests:", err);
+      res.status(500).json({ error: "Impossible de charger la configuration." });
+    }
+  });
+
+  // Soumission d'une nouvelle demande de création de compte école
+  app.post("/api/public/school-requests", async (req, res) => {
+    try {
+      const {
+        nom_ecole,
+        type_etablissement,
+        pays,
+        ville,
+        adresse,
+        telephone_ecole,
+        email_ecole,
+        plan_souhaite,
+        montant_estime,
+        demandeur_nom,
+        demandeur_fonction,
+        demandeur_email,
+        demandeur_telephone,
+        demandeur_whatsapp,
+        notes
+      } = req.body;
+
+      if (!nom_ecole || !nom_ecole.trim()) {
+        return res.status(400).json({ error: "Le nom de l'établissement est requis." });
+      }
+      if (!demandeur_nom || !demandeur_nom.trim()) {
+        return res.status(400).json({ error: "Le nom du demandeur (directeur/fondateur) est requis." });
+      }
+      if (!demandeur_email || !demandeur_email.trim()) {
+        return res.status(400).json({ error: "L'adresse email du demandeur est requise." });
+      }
+      if (!demandeur_telephone || !demandeur_telephone.trim()) {
+        return res.status(400).json({ error: "Le numéro de téléphone du demandeur est requis." });
+      }
+
+      // Generate unique reference
+      const cleanRef = `DEM-${new Date().getFullYear()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+
+      const stmt = db.prepare(`
+        INSERT INTO school_creation_requests (
+          reference, nom_ecole, type_etablissement, pays, ville, adresse,
+          telephone_ecole, email_ecole, plan_souhaite, montant_estime,
+          demandeur_nom, demandeur_fonction, demandeur_email, demandeur_telephone,
+          demandeur_whatsapp, notes, statut
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'payment_pending')
+      `);
+
+      const result = stmt.run(
+        cleanRef,
+        nom_ecole.trim(),
+        type_etablissement || 'Général',
+        pays || 'Bénin',
+        ville || '',
+        adresse || '',
+        telephone_ecole || '',
+        email_ecole ? email_ecole.trim().toLowerCase() : '',
+        plan_souhaite || 'PRO',
+        Number(montant_estime) || 0,
+        demandeur_nom.trim(),
+        demandeur_fonction || 'Directeur / Fondateur',
+        demandeur_email.trim().toLowerCase(),
+        demandeur_telephone.trim(),
+        demandeur_whatsapp ? demandeur_whatsapp.trim() : demandeur_telephone.trim(),
+        notes || ''
+      );
+
+      const requestId = Number(result.lastInsertRowid);
+      const newRequest = db.prepare("SELECT * FROM school_creation_requests WHERE id = ?").get(requestId) as any;
+
+      // Super Admin Real-Time Notification
+      try {
+        const notifTitre = `Nouvelle demande d'école : ${nom_ecole.trim()}`;
+        const notifMsg = `Demande reçue de ${demandeur_nom.trim()} (${demandeur_fonction || 'Demandeur'}) pour l'établissement « ${nom_ecole.trim()} » (${ville || 'N/A'}, ${pays || 'Bénin'}). Formule souhaitée : ${plan_souhaite || 'PRO'}. Contact : ${demandeur_whatsapp || demandeur_telephone}.`;
+        
+        db.prepare(`
+          INSERT INTO super_admin_notifications (titre, message, type, school_id, school_name, school_code, admin_email, lu)
+          VALUES (?, ?, 'school_request', NULL, ?, ?, ?, 0)
+        `).run(notifTitre, notifMsg, nom_ecole.trim(), cleanRef, demandeur_email.trim().toLowerCase());
+      } catch (notifErr) {
+        console.error("Erreur notification super admin demande école:", notifErr);
+      }
+
+      // Send acknowledgment email if SMTP is configured
+      try {
+        sendMailWithFallback({
+          to: demandeur_email.trim().toLowerCase(),
+          subject: `📋 Réception de votre demande d'ouverture d'école - ${cleanRef}`,
+          text: `Bonjour ${demandeur_nom},\n\nNous avons bien reçu votre demande de création de compte pour « ${nom_ecole} » sur MégafixaEduc Pro (Réf: ${cleanRef}).\n\nVeuillez procéder au règlement Mobile Money pour finaliser votre dossier.\n\nNos équipes valideront vos accès dans les 24h au plus.\n\nCordialement,\nL'équipe MégafixaEduc Pro`,
+          html: `<div style="font-family:sans-serif;padding:24px;background:#f8fafc;border-radius:16px;max-width:560px;margin:auto;">
+            <h2 style="color:#0f172a;margin-top:0;">Demande de création d'école reçue 📋</h2>
+            <p style="color:#334155;font-size:14px;line-height:1.6;">Bonjour <strong>${demandeur_nom}</strong>,</p>
+            <p style="color:#334155;font-size:14px;line-height:1.6;">Nous confirmons la bonne réception de la demande pour votre établissement <strong>${nom_ecole}</strong> sur la plateforme <strong>MégafixaEduc Pro</strong>.</p>
+            <div style="background:#ffffff;border:1px solid #e2e8f0;padding:16px;border-radius:12px;margin:16px 0;">
+              <p style="margin:4px 0;font-size:13px;"><strong>Référence de dossier :</strong> <span style="color:#4f46e5;font-weight:bold;">${cleanRef}</span></p>
+              <p style="margin:4px 0;font-size:13px;"><strong>Formule choisie :</strong> ${plan_souhaite || 'PRO'}</p>
+              <p style="margin:4px 0;font-size:13px;"><strong>Délai de traitement :</strong> 24h maximum après confirmation du paiement</p>
+            </div>
+            <p style="color:#64748b;font-size:12px;">Pour toute question, contactez notre équipe au (+229) 0161107918 ou par WhatsApp.</p>
+          </div>`
+        }).catch(e => console.warn("Email demande notification non bloquante:", e));
+      } catch (mailErr) {}
+
+      res.status(201).json({
+        success: true,
+        reference: cleanRef,
+        requestId,
+        request: newRequest,
+        message: "Demande enregistrée avec succès. Vous pouvez maintenant procéder au paiement Mobile Money."
+      });
+    } catch (err: any) {
+      console.error("Erreur création demande école:", err);
+      res.status(500).json({ error: "Erreur lors de l'enregistrement de la demande : " + (err.message || err) });
+    }
+  });
+
+  // Confirmation du paiement Mobile Money par le demandeur
+  app.post("/api/public/school-requests/:id_or_ref/confirm-payment", (req, res) => {
+    try {
+      const { id_or_ref } = req.params;
+      const { payment_method, payment_phone, payment_reference } = req.body;
+
+      const request = db.prepare(`
+        SELECT * FROM school_creation_requests 
+        WHERE reference = ? OR id = ?
+      `).get(id_or_ref, isNaN(Number(id_or_ref)) ? -1 : Number(id_or_ref)) as any;
+
+      if (!request) {
+        return res.status(404).json({ error: "Dossier de demande introuvable." });
+      }
+
+      db.prepare(`
+        UPDATE school_creation_requests 
+        SET payment_method = ?,
+            payment_phone = ?,
+            payment_reference = ?,
+            statut = 'payment_confirmed',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        payment_method || 'Mobile Money',
+        payment_phone || request.demandeur_telephone,
+        payment_reference || `MOMO-${Date.now().toString(36).toUpperCase()}`,
+        request.id
+      );
+
+      // Notification prioritaire au Super Admin
+      try {
+        const notifTitre = `💰 Paiement signalé : ${request.nom_ecole} (${request.reference})`;
+        const notifMsg = `Le demandeur ${request.demandeur_nom} (${request.demandeur_telephone}) a confirmé le paiement Mobile Money via ${payment_method || 'Mobile Money'}. Tél payeur : ${payment_phone || 'Non renseigné'}. Réf : ${payment_reference || 'N/A'}. Traitement et vérification dans les 24h.`;
+        
+        db.prepare(`
+          INSERT INTO super_admin_notifications (titre, message, type, school_id, school_name, school_code, admin_email, lu)
+          VALUES (?, ?, 'school_request_payment', NULL, ?, ?, ?, 0)
+        `).run(notifTitre, notifMsg, request.nom_ecole, request.reference, request.demandeur_email);
+      } catch (e) {
+        console.error("Erreur notification super admin paiement:", e);
+      }
+
+      const updated = db.prepare("SELECT * FROM school_creation_requests WHERE id = ?").get(request.id);
+      res.json({
+        success: true,
+        request: updated,
+        message: "Votre paiement a été signalé avec succès. Votre compte école sera vérifié et activé sous 24h maximum."
+      });
+    } catch (err: any) {
+      console.error("Erreur confirmation paiement:", err);
+      res.status(500).json({ error: "Erreur lors de la confirmation du paiement : " + (err.message || err) });
+    }
+  });
+
+  // Consultation publique du statut d'une demande par référence
+  app.get("/api/public/school-requests/:ref/status", (req, res) => {
+    try {
+      const { ref } = req.params;
+      const request = db.prepare(`
+        SELECT id, reference, nom_ecole, type_etablissement, pays, ville, plan_souhaite,
+               demandeur_nom, demandeur_email, demandeur_telephone, demandeur_whatsapp,
+               statut, motif_rejet, created_at, updated_at, school_id
+        FROM school_creation_requests
+        WHERE reference = ? OR id = ?
+      `).get(ref, isNaN(Number(ref)) ? -1 : Number(ref)) as any;
+
+      if (!request) {
+        return res.status(404).json({ error: "Dossier introuvable." });
+      }
+
+      res.json(request);
+    } catch (err: any) {
+      res.status(500).json({ error: "Erreur lors de la recherche du statut." });
+    }
+  });
+
+  // Liste de toutes les demandes pour le Super Admin
+  app.get("/api/super-admin/school-requests", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const requests = db.prepare(`
+        SELECT r.*, s.code_ecole as linked_school_code, s.statut_abonnement as linked_school_status
+        FROM school_creation_requests r
+        LEFT JOIN school_info s ON r.school_id = s.id
+        ORDER BY r.created_at DESC
+      `).all() as any[];
+
+      const stats = {
+        total: requests.length,
+        pending: requests.filter(r => r.statut === 'pending' || r.statut === 'payment_pending').length,
+        payment_confirmed: requests.filter(r => r.statut === 'payment_confirmed').length,
+        approved: requests.filter(r => r.statut === 'approved').length,
+        rejected: requests.filter(r => r.statut === 'rejected').length
+      };
+
+      res.json({ requests, stats });
+    } catch (err: any) {
+      console.error("Erreur récupération demandes super admin:", err);
+      res.status(500).json({ error: "Erreur lors de la récupération des demandes." });
+    }
+  });
+
+  // Approbation et création automatique de l'école par le Super Admin
+  app.post("/api/super-admin/school-requests/:id/approve", authenticateToken, requireSuperAdmin, async (req, res) => {
+    try {
+      const requestId = parseInt(req.params.id, 10);
+      const { code_ecole, custom_password, plan_abonnement, duree_mois, admin_notes } = req.body || {};
+
+      const request = db.prepare("SELECT * FROM school_creation_requests WHERE id = ?").get(requestId) as any;
+      if (!request) {
+        return res.status(404).json({ error: "Demande introuvable." });
+      }
+
+      if (request.statut === 'approved' && request.school_id) {
+        return res.status(400).json({ error: "Cette demande a déjà été approuvée et l'école a été créée." });
+      }
+
+      const cleanEmail = request.demandeur_email.trim().toLowerCase();
+
+      // Check if user email already exists in system
+      const existingUser = db.prepare("SELECT id, school_id FROM utilisateurs WHERE LOWER(TRIM(email)) = ?").get(cleanEmail) as any;
+      if (existingUser) {
+        return res.status(400).json({
+          error: `L'adresse email (${cleanEmail}) est déjà associée à un compte utilisateur existant (École ID: ${existingUser.school_id || 'N/A'}).`
+        });
+      }
+
+      // Generate unique school code
+      const finalCode = (code_ecole && code_ecole.trim())
+        ? code_ecole.trim().toUpperCase()
+        : `MF-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+
+      // Generate secure default password (or use provided custom)
+      const randomSuffix = Math.random().toString(36).substring(2, 6).toLowerCase();
+      const defaultPassword = (custom_password && custom_password.trim()) 
+        ? custom_password.trim() 
+        : `Edu2026!${randomSuffix}`;
+      const passwordHash = bcrypt.hashSync(defaultPassword, 8);
+
+      // Plan & Subscription Key
+      const plan = plan_abonnement || request.plan_souhaite || 'PRO';
+      let subscriptionKey = '';
+      try {
+        subscriptionKey = generateSubscriptionKey(plan);
+      } catch (e) {
+        subscriptionKey = `MF-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+      }
+
+      const months = parseInt(duree_mois, 10) || 12;
+      const expiryDate = new Date(Date.now() + months * 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      let newSchoolId = 0;
+
+      const approveTx = db.transaction(() => {
+        // 1. Create School Record
+        const schoolResult = db.prepare(`
+          INSERT INTO school_info (
+            nom, code_ecole, email, telephone, adresse, pays, devise,
+            plan_abonnement, statut_abonnement, date_fin_abonnement, subscription_key
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'actif', ?, ?)
+        `).run(
+          request.nom_ecole.trim(),
+          finalCode,
+          request.email_ecole || cleanEmail,
+          request.telephone_ecole || request.demandeur_telephone,
+          request.adresse || request.ville || 'Cotonou',
+          request.pays || 'Bénin',
+          'FCFA',
+          plan,
+          expiryDate,
+          subscriptionKey
+        );
+
+        newSchoolId = Number(schoolResult.lastInsertRowid);
+
+        // 2. Create Principal Administrator User
+        db.prepare(`
+          INSERT INTO utilisateurs (
+            nom, email, mot_de_passe, mot_de_passe_initial, role, approuve, is_first_login, can_write, school_id
+          ) VALUES (?, ?, ?, ?, 'admin', 1, 0, 1, ?)
+        `).run(
+          request.demandeur_nom.trim(),
+          cleanEmail,
+          passwordHash,
+          defaultPassword,
+          newSchoolId
+        );
+
+        // 3. Create Subscription License Record
+        try {
+          db.prepare(`
+            INSERT INTO subscription_licenses (
+              license_key, plan_name, plan_code, school_name, school_id, client_email, client_name, client_phone, duration_days, status, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+          `).run(
+            subscriptionKey,
+            plan,
+            plan.toUpperCase(),
+            request.nom_ecole.trim(),
+            newSchoolId,
+            cleanEmail,
+            request.demandeur_nom.trim(),
+            request.demandeur_telephone,
+            months * 30,
+            expiryDate
+          );
+        } catch (e) {}
+
+        // 4. Update the request status
+        db.prepare(`
+          UPDATE school_creation_requests
+          SET statut = 'approved',
+              school_id = ?,
+              admin_notes = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(newSchoolId, admin_notes || 'Demande validée et compte configuré par le Super Admin.', requestId);
+      });
+
+      approveTx();
+
+      // Send email to applicant with credentials
+      try {
+        sendMailWithFallback({
+          to: cleanEmail,
+          subject: `🎉 Bienvenue sur MégafixaEduc Pro ! Votre compte école « ${request.nom_ecole} » est actif`,
+          text: `Bonjour ${request.demandeur_nom},\n\nFélicitations ! Votre demande pour « ${request.nom_ecole} » a été acceptée par l'administration.\n\nVos identifiants d'accès :\n- Nom de l'école : ${request.nom_ecole}\n- Code École : ${finalCode}\n- Email de connexion : ${cleanEmail}\n- Mot de passe temporaire : ${defaultPassword}\n- Formule : ${plan}\n\nConnectez-vous dès maintenant sur la plateforme MégafixaEduc Pro.\n\nCordialement,\nL'équipe MégafixaEduc Pro`,
+          html: `<div style="font-family:sans-serif;padding:24px;background:#f8fafc;border-radius:16px;max-width:560px;margin:auto;">
+            <h2 style="color:#0f172a;margin-top:0;">Félicitations et bienvenue ! 🎉</h2>
+            <p style="color:#334155;font-size:14px;line-height:1.6;">Bonjour <strong>${request.demandeur_nom}</strong>,</p>
+            <p style="color:#334155;font-size:14px;line-height:1.6;">Votre demande d'ouverture de compte pour l'établissement <strong>${request.nom_ecole}</strong> a été validée avec succès.</p>
+            <div style="background:#ffffff;border:1px solid #cbd5e1;padding:18px;border-radius:12px;margin:20px 0;">
+              <h4 style="margin-top:0;margin-bottom:12px;color:#4f46e5;font-size:14px;text-transform:uppercase;">Vos Accès Administrateur</h4>
+              <p style="margin:6px 0;font-size:13px;"><strong>Code École :</strong> <span style="font-family:monospace;background:#f1f5f9;padding:2px 6px;border-radius:4px;font-weight:bold;">${finalCode}</span></p>
+              <p style="margin:6px 0;font-size:13px;"><strong>Identifiant (Email) :</strong> ${cleanEmail}</p>
+              <p style="margin:6px 0;font-size:13px;"><strong>Mot de passe initial :</strong> <span style="font-family:monospace;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-weight:bold;">${defaultPassword}</span></p>
+              <p style="margin:6px 0;font-size:13px;"><strong>Formule :</strong> ${plan} (Valable jusqu'au ${expiryDate})</p>
+            </div>
+            <p style="color:#64748b;font-size:12px;">Vous pourrez personnaliser votre mot de passe et vos informations dès votre première connexion.</p>
+          </div>`
+        }).catch(e => console.warn("Email approbation non bloquant:", e));
+      } catch (e) {}
+
+      // SaaS Audit Log
+      try {
+        recordSaasLog((req as any).user?.id || null, 'APPROVE_SCHOOL_REQUEST', {
+          request_id: requestId,
+          reference: request.reference,
+          school_id: newSchoolId,
+          school_name: request.nom_ecole,
+          admin_email: cleanEmail
+        }, req);
+      } catch (e) {}
+
+      res.json({
+        success: true,
+        message: `L'établissement ${request.nom_ecole} a été validé et activé avec succès.`,
+        schoolId: newSchoolId,
+        credentials: {
+          nom: request.nom_ecole,
+          code_ecole: finalCode,
+          email: cleanEmail,
+          default_password: defaultPassword,
+          plan,
+          expiry_date: expiryDate
+        }
+      });
+    } catch (err: any) {
+      console.error("Erreur approbation demande école:", err);
+      res.status(500).json({ error: "Erreur lors de l'approbation de la demande : " + (err.message || err) });
+    }
+  });
+
+  // Rejet d'une demande par le Super Admin
+  app.post("/api/super-admin/school-requests/:id/reject", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const requestId = parseInt(req.params.id, 10);
+      const { motif_rejet } = req.body || {};
+
+      const request = db.prepare("SELECT * FROM school_creation_requests WHERE id = ?").get(requestId) as any;
+      if (!request) {
+        return res.status(404).json({ error: "Demande introuvable." });
+      }
+
+      db.prepare(`
+        UPDATE school_creation_requests
+        SET statut = 'rejected',
+              motif_rejet = ?,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(motif_rejet || 'Informations incomplètes ou paiement non constaté.', requestId);
+
+      // Notify applicant by email if possible
+      try {
+        sendMailWithFallback({
+          to: request.demandeur_email,
+          subject: `Information concernant votre demande d'ouverture d'école - ${request.reference}`,
+          text: `Bonjour ${request.demandeur_nom},\n\nVotre demande pour « ${request.nom_ecole} » n'a pas pu être validée pour le motif suivant :\n${motif_rejet || 'Paiement non constaté ou pièces incomplètes.'}\n\nVeuillez contacter notre support au (+229) 0161107918 ou par WhatsApp pour assistance.\n\nL'équipe MégafixaEduc Pro`,
+          html: `<div style="font-family:sans-serif;padding:24px;background:#f8fafc;border-radius:16px;max-width:560px;margin:auto;">
+            <h2 style="color:#e11d48;margin-top:0;">Statut de votre demande : Non validée</h2>
+            <p style="color:#334155;font-size:14px;line-height:1.6;">Bonjour <strong>${request.demandeur_nom}</strong>,</p>
+            <p style="color:#334155;font-size:14px;line-height:1.6;">Votre demande pour l'établissement <strong>${request.nom_ecole}</strong> (Réf: ${request.reference}) n'a pas pu aboutir pour le motif suivant :</p>
+            <div style="background:#fff1f2;border:1px solid #fecdd3;color:#be123c;padding:14px;border-radius:10px;font-size:13px;margin:16px 0;">
+              ${motif_rejet || 'Informations incomplètes ou paiement non confirmé.'}
+            </div>
+            <p style="color:#64748b;font-size:12px;">Vous pouvez contacter directement notre équipe au (+229) 0161107918 ou par WhatsApp pour régulariser votre dossier.</p>
+          </div>`
+        }).catch(e => console.warn(e));
+      } catch (e) {}
+
+      res.json({ success: true, message: "La demande a été rejetée." });
+    } catch (err: any) {
+      res.status(500).json({ error: "Erreur lors du rejet de la demande : " + (err.message || err) });
+    }
+  });
+
+  // Suppression d'une demande par le Super Admin
+  app.delete("/api/super-admin/school-requests/:id", authenticateToken, requireSuperAdmin, (req, res) => {
+    try {
+      const requestId = parseInt(req.params.id, 10);
+      db.prepare("DELETE FROM school_creation_requests WHERE id = ?").run(requestId);
+      res.json({ success: true, message: "Demande supprimée." });
+    } catch (err: any) {
+      res.status(500).json({ error: "Erreur lors de la suppression de la demande." });
     }
   });
 
